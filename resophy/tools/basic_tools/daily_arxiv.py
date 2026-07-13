@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import threading
 import time
@@ -21,6 +22,12 @@ from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional
 
 import arxiv
+
+from resophy.tools.basic_tools.arxiv_network import (
+    arxiv_urlopen,
+    new_arxiv_requests_session,
+)
+from resophy.tools.basic_tools.daily_arxiv_quality import normalize_quality_config
 
 # System prompt words extracted by the organization
 AFFILIATION_EXTRACTION_PROMPT = """I will provide you with the first-page information of a paper. You need to extract all affiliations (institution names) from it and also extract the homepage and github repo url if there is. For affiliations, do not include author names. If an affiliation includes details such as region, department, school, or college, those should be omitted. Only keep the main institution name (e.g., School of Computer Science, Fudan University → Fudan University).
@@ -48,6 +55,197 @@ Notice:
 
 The summary entered now is:
 """
+
+# Institution tier ordering (strongest first). Used by the daily-arxiv quality filter.
+INSTITUTION_TIER_ORDER = ["S", "A", "B", "C"]
+INSTITUTION_TIER_RANK = {
+    tier: index for index, tier in enumerate(INSTITUTION_TIER_ORDER)
+}
+
+DEFAULT_SUMMARY_PROMPT_ZH = """我会给你一篇 AI 文章的英文摘要，以及一个可选关键词列表（英文）。你需要：
+
+用中文简要总结这篇文章在解决什么问题、如何解决的，字数控制在 100-200 字。
+
+从我提供的关键词列表中挑选最能代表文章类型的关键词（英文）
+
+按如下 JSON 格式输出结果：
+
+{"summary": "这篇文章主要解决...的问题。作者提出...方法，通过...实现了...", "keywords": ["Keyword"]}
+
+注意
+
+summary 必须中文，简洁、客观。
+
+keywords 必须来自我提供的关键词列表：[{keyword_list}], 最多{max_keywords}个关键词。一定要是符合这篇文章的关键词，不能随意猜测。
+
+直接输出 JSON，不要有其他解释。
+
+现在输入的摘要是：
+"""
+
+DEFAULT_SUMMARY_PROMPT_EN = """I will give you an English abstract of an AI paper, and an optional keyword list (in English). You need to:
+
+Briefly summarize in English what problem this paper solves and how it solves it, keep it within 100-200 words.
+
+Select keywords (in English) from the keyword list I provide that best represent the type of paper.
+
+Output the result in the following JSON format:
+
+{"summary": "This paper mainly solves...problem. The authors propose...method, through...achieved...", "keywords": ["Keyword"]}
+
+Notes:
+
+summary must be in English, concise and objective.
+
+keywords must come from the keyword list I provide: [{keyword_list}], at most {max_keywords} keywords. They must be keywords that match this paper, do not guess randomly.
+
+Output JSON directly, no other explanations.
+
+Now the input abstract is:
+"""
+
+
+def build_daily_arxiv_summary_prompt(
+    settings: Dict[str, Any], user_settings: Optional[Dict[str, Any]] = None
+) -> str:
+    """Build the Daily arXiv summary prompt using the same rules as scheduled fetch."""
+    settings = settings if isinstance(settings, dict) else {}
+    user_settings = user_settings if isinstance(user_settings, dict) else {}
+
+    keyword_list = settings.get("keywordList", []) or []
+    keyword_list = [kw.strip() for kw in keyword_list if isinstance(kw, str) and kw.strip()]
+    max_keywords = settings.get("maxKeywords", 1)
+    ai_language = user_settings.get("aiLanguage", "zh")
+
+    if ai_language and str(ai_language).lower().startswith("zh"):
+        summary_prompt = settings.get("summaryPromptZh") or DEFAULT_SUMMARY_PROMPT_ZH
+    else:
+        summary_prompt = settings.get("summaryPromptEn") or DEFAULT_SUMMARY_PROMPT_EN
+
+    if keyword_list:
+        summary_prompt = summary_prompt.replace("{keyword_list}", ", ".join(keyword_list))
+    else:
+        summary_prompt = summary_prompt.replace("{keyword_list}", "")
+    return summary_prompt.replace("{max_keywords}", str(max_keywords))
+
+
+def is_valid_daily_arxiv_summary(summary: Any) -> bool:
+    if not isinstance(summary, str):
+        return False
+    normalized = summary.strip()
+    if not normalized:
+        return False
+    without_dots = re.sub(r"[\s.。…]+", "", normalized)
+    return bool(without_dots)
+
+
+def normalize_institution_match_text(text: Any) -> str:
+    if not isinstance(text, str):
+        return ""
+    normalized = text.casefold()
+    normalized = re.sub(r"[^0-9a-z]+", " ", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def get_institution_tier(
+    affiliation: Any, institution_tiers: Any
+) -> Optional[str]:
+    affiliation_text = normalize_institution_match_text(affiliation)
+    if not affiliation_text:
+        return None
+    tiers = compact_daily_arxiv_institution_tiers(institution_tiers)
+    for tier in INSTITUTION_TIER_ORDER:
+        for institution in tiers.get(tier, []):
+            institution_text = normalize_institution_match_text(institution)
+            if not institution_text:
+                continue
+            if (
+                affiliation_text == institution_text
+                or institution_text in affiliation_text
+                or affiliation_text in institution_text
+            ):
+                return tier
+    return None
+
+
+def get_best_institution_tier(
+    affiliations: Any, institution_tiers: Any
+) -> Optional[str]:
+    if not isinstance(affiliations, list):
+        return None
+
+    best_tier = None
+    best_rank = len(INSTITUTION_TIER_ORDER)
+    for affiliation in affiliations:
+        tier = get_institution_tier(affiliation, institution_tiers)
+        if tier is None:
+            continue
+        tier_rank = INSTITUTION_TIER_RANK[tier]
+        if tier_rank < best_rank:
+            best_rank = tier_rank
+            best_tier = tier
+    return best_tier
+
+
+def get_daily_arxiv_strategy_config(quality_config: Any) -> Dict[str, Any]:
+    normalized = normalize_quality_config(quality_config)
+    strategy_key = normalized.get("strategy", "balanced")
+    strategies = normalized.get("strategies") or {}
+    strategy_config = strategies.get(strategy_key) or strategies.get("balanced") or {}
+    return strategy_config if isinstance(strategy_config, dict) else {}
+
+
+def should_keep_paper_by_institution_tier(
+    paper: Dict[str, Any], quality_config: Any
+) -> tuple[bool, str]:
+    normalized = normalize_quality_config(quality_config)
+    strategy_config = get_daily_arxiv_strategy_config(normalized)
+    min_tier = strategy_config.get("minInstitutionTier", "B")
+    allow_unknown = bool(strategy_config.get("allowUnknownInstitutions", True))
+
+    if min_tier not in INSTITUTION_TIER_RANK:
+        min_tier = "B"
+
+    affiliations = paper.get("affiliations") or []
+    best_tier = get_best_institution_tier(
+        affiliations, normalized.get("institutionTiers", {})
+    )
+    if best_tier is None:
+        if allow_unknown:
+            return True, "institution tier unknown but allowed"
+        return False, "institution tier unknown"
+
+    if INSTITUTION_TIER_RANK[best_tier] <= INSTITUTION_TIER_RANK[min_tier]:
+        return True, f"institution tier {best_tier} satisfies minimum {min_tier}"
+    return False, f"institution tier {best_tier} below minimum {min_tier}"
+
+
+def compact_daily_arxiv_institution_tiers(value: Any) -> Dict[str, List[str]]:
+    if isinstance(value, dict) and isinstance(value.get("institutionTiers"), dict):
+        tiers = value.get("institutionTiers")
+    else:
+        tiers = value
+    if not isinstance(tiers, dict):
+        return {}
+
+    compacted: Dict[str, List[str]] = {}
+    for tier in ["S", "A", "B", "C"]:
+        raw_items = tiers.get(tier, [])
+        if not isinstance(raw_items, list):
+            continue
+        seen = set()
+        items = []
+        for item in raw_items:
+            if not isinstance(item, str):
+                continue
+            cleaned = item.strip()
+            key = cleaned.casefold()
+            if cleaned and key not in seen:
+                seen.add(key)
+                items.append(cleaned)
+        if items:
+            compacted[tier] = items
+    return compacted
 
 
 def get_arxiv_announce_date(submitted: datetime = None) -> datetime:
@@ -1027,6 +1225,18 @@ Now the input abstract is:
                         paper_announce_date, category, paper.arxiv_id
                     )
 
+                    # Institution-tier hard filter: probe the first PDF page (cheap
+                    # ranged download) before fetching the full PDF, so rejected
+                    # papers are never fully downloaded or saved.
+                    keep_paper, tier_reason = self._prefilter_paper_by_institution_tier(
+                        paper, settings, llm_config, affiliation_prompt
+                    )
+                    if not keep_paper:
+                        print(
+                            f"[DailyArxiv] Skip {paper.arxiv_id} by institution tier filter before full PDF download: {tier_reason}"
+                        )
+                        continue
+
                     # download PDF to the correct date directory (file size is updated periodically during download)
                     pdf_path = self._download_pdf(paper, paper_cat_dir, progress)
                     if pdf_path:
@@ -1044,26 +1254,27 @@ Now the input abstract is:
                         if thumbnail_path:
                             paper.thumbnail_path = thumbnail_path
 
-                        # extraction mechanism,homepage and github(from PDF First page)
-                        if (
-                            llm_config.get("llmBaseUrl")
-                            and llm_config.get("llmApiKey")
-                            and llm_config.get("llmModel")
-                        ):
-                            extraction_result = self._extract_affiliations(
-                                pdf_path,
-                                llm_config["llmBaseUrl"],
-                                llm_config["llmApiKey"],
-                                llm_config["llmModel"],
-                                prompt=affiliation_prompt,
-                            )
-                            paper.affiliations = extraction_result.get(
-                                "affiliations", []
-                            )
-                            paper.countries = extraction_result.get("countries", [])
-                            paper.homepage = extraction_result.get("homepage")
-                            paper.github = extraction_result.get("github")
-                            paper.affiliations_extracted = True
+                    # extraction mechanism,homepage and github(from PDF First page)
+                    if (
+                        llm_config.get("llmBaseUrl")
+                        and llm_config.get("llmApiKey")
+                        and llm_config.get("llmModel")
+                        and not paper.affiliations_extracted
+                    ):
+                        extraction_result = self._extract_affiliations(
+                            pdf_path,
+                            llm_config["llmBaseUrl"],
+                            llm_config["llmApiKey"],
+                            llm_config["llmModel"],
+                            prompt=affiliation_prompt,
+                        )
+                        paper.affiliations = extraction_result.get(
+                            "affiliations", []
+                        )
+                        paper.countries = extraction_result.get("countries", [])
+                        paper.homepage = extraction_result.get("homepage")
+                        paper.github = extraction_result.get("github")
+                        paper.affiliations_extracted = True
                     else:
                         # PDF Download failed, removed from status (will download again next time)
                         download_status = self._load_download_status(
@@ -1221,6 +1432,183 @@ Now the input abstract is:
             print(f"[DailyArxiv] verify PDF Integrity error: {pdf_path}, mistake: {e}")
             return False
 
+    def _get_export_pdf_url(self, paper: ArxivPaper) -> str:
+        """Return the export.arxiv.org PDF URL used by Daily arXiv downloads."""
+        pdf_url = paper.pdf_url
+        if "arxiv.org/pdf/" in pdf_url:
+            return pdf_url.replace("arxiv.org/pdf/", "export.arxiv.org/pdf/")
+        if "arxiv.org/abs/" in pdf_url:
+            return pdf_url.replace("arxiv.org/abs/", "export.arxiv.org/pdf/")
+        return pdf_url
+
+    def _get_pdf_request_headers(self) -> Dict[str, str]:
+        return {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/pdf,text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Referer": "https://arxiv.org/",
+            "Connection": "keep-alive",
+        }
+
+    def _extract_first_page_text_from_pdf_bytes(
+        self, pdf_bytes: bytes
+    ) -> Optional[str]:
+        if len(pdf_bytes) < 1024:
+            return None
+
+        try:
+            import fitz  # PyMuPDF
+
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            try:
+                if len(doc) == 0:
+                    return None
+                text = doc[0].get_text()
+                return text if text else None
+            finally:
+                doc.close()
+        except Exception:
+            return None
+
+    def _download_pdf_first_page_text(self, paper: ArxivPaper) -> Optional[str]:
+        """
+        Download only the leading byte ranges needed to parse the first page.
+
+        Many arXiv PDFs can expose the first page after a few range requests. If
+        the PDF layout requires bytes outside the probe window, the caller treats
+        the affiliation tier as unknown instead of downloading the full paper
+        before the hard filter.
+        """
+        pdf_url = self._get_export_pdf_url(paper)
+        probe_sizes = (
+            256 * 1024,
+            512 * 1024,
+            1024 * 1024,
+            2 * 1024 * 1024,
+            4 * 1024 * 1024,
+        )
+
+        print(f"[DailyArxiv] probe first-page PDF bytes: {paper.arxiv_id}")
+        for probe_size in probe_sizes:
+            headers = self._get_pdf_request_headers()
+            headers["Range"] = f"bytes=0-{probe_size - 1}"
+            headers["Accept-Encoding"] = "identity"
+            try:
+                with new_arxiv_requests_session(pdf_url) as session:
+                    response = session.get(
+                        pdf_url,
+                        headers=headers,
+                        timeout=30,
+                        stream=True,
+                        allow_redirects=True,
+                    )
+
+                    if response.status_code not in (200, 206):
+                        print(
+                            f"[DailyArxiv] first-page probe failed for {paper.arxiv_id}: "
+                            f"HTTP {response.status_code}"
+                        )
+                        return None
+
+                    chunks = []
+                    bytes_read = 0
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if not chunk:
+                            continue
+                        remaining = probe_size - bytes_read
+                        if remaining <= 0:
+                            break
+                        if len(chunk) > remaining:
+                            chunk = chunk[:remaining]
+                        chunks.append(chunk)
+                        bytes_read += len(chunk)
+                        if bytes_read >= probe_size:
+                            break
+
+                pdf_bytes = b"".join(chunks)
+                first_page_text = self._extract_first_page_text_from_pdf_bytes(
+                    pdf_bytes
+                )
+                if first_page_text:
+                    print(
+                        f"[DailyArxiv] first-page probe succeeded for {paper.arxiv_id}: "
+                        f"{bytes_read} bytes"
+                    )
+                    return first_page_text
+
+            except Exception as exc:
+                print(
+                    f"[DailyArxiv] first-page probe failed for {paper.arxiv_id}: {exc}"
+                )
+                return None
+
+        print(
+            f"[DailyArxiv] first-page probe could not parse text for {paper.arxiv_id}"
+        )
+        return None
+
+    def _extract_affiliations_from_first_page_text(
+        self,
+        first_page_text: str,
+        openai_base_url: str,
+        openai_api_key: str,
+        model_name: str,
+        prompt: str = None,
+    ) -> Dict[str, Any]:
+        if not first_page_text:
+            return {
+                "affiliations": [],
+                "countries": [],
+                "homepage": None,
+                "github": None,
+            }
+
+        return extract_affiliations_with_llm(
+            first_page_text,
+            openai_base_url,
+            openai_api_key,
+            model_name,
+            prompt=prompt,
+            settings_file=self.settings_file,
+        )
+
+    def _prefilter_paper_by_institution_tier(
+        self,
+        paper: ArxivPaper,
+        settings: Dict,
+        llm_config: Dict,
+        affiliation_prompt: str = None,
+    ) -> tuple[bool, str]:
+        if (
+            llm_config.get("llmBaseUrl")
+            and llm_config.get("llmApiKey")
+            and llm_config.get("llmModel")
+        ):
+            try:
+                first_page_text = self._download_pdf_first_page_text(paper)
+                if first_page_text:
+                    extraction_result = self._extract_affiliations_from_first_page_text(
+                        first_page_text,
+                        llm_config["llmBaseUrl"],
+                        llm_config["llmApiKey"],
+                        llm_config["llmModel"],
+                        prompt=affiliation_prompt,
+                    )
+                    paper.affiliations = extraction_result.get("affiliations", [])
+                    paper.countries = extraction_result.get("countries", [])
+                    paper.homepage = extraction_result.get("homepage")
+                    paper.github = extraction_result.get("github")
+                    paper.affiliations_extracted = True
+            except Exception as e:
+                print(
+                    f"[DailyArxiv] Failed to pre-extract affiliations for {paper.arxiv_id}: {e}"
+                )
+
+        return should_keep_paper_by_institution_tier(
+            paper.to_dict(), settings.get("qualityConfig", {})
+        )
+
     def _download_pdf(
         self, paper: ArxivPaper, cat_dir: str, progress: FetchProgress = None
     ) -> Optional[str]:
@@ -1250,40 +1638,24 @@ Now the input abstract is:
 
             print(f"[DailyArxiv] download PDF: {paper.arxiv_id}")
 
-            # Will PDF URL from arxiv.org Convert to export.arxiv.org(Officially recommended export service)
-            # For example: https://arxiv.org/pdf/2512.04025v1 -> https://export.arxiv.org/pdf/2512.04025v1
-            pdf_url = paper.pdf_url
-            if "arxiv.org/pdf/" in pdf_url:
-                pdf_url = pdf_url.replace("arxiv.org/pdf/", "export.arxiv.org/pdf/")
-            elif "arxiv.org/abs/" in pdf_url:
-                # in the case of abs URL, also converted to export
-                pdf_url = pdf_url.replace("arxiv.org/abs/", "export.arxiv.org/pdf/")
-            else:
-                # if it is already export.arxiv.org, remain unchanged
-                pass
+            pdf_url = self._get_export_pdf_url(paper)
 
             # Try using it first requests library (if available), which usually handles the anti-crawling mechanism better
             try:
                 import requests
 
                 # use requests Library, add complete browser request headers
-                headers = {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                    "Accept": "application/pdf,text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                    "Accept-Language": "en-US,en;q=0.9",
-                    "Accept-Encoding": "gzip, deflate, br",
-                    "Referer": "https://arxiv.org/",
-                    "Connection": "keep-alive",
-                }
+                headers = self._get_pdf_request_headers()
 
                 # download PDF(use export.arxiv.org, no need to visit the home page first)
-                response = requests.get(
-                    pdf_url,
-                    headers=headers,
-                    timeout=30,
-                    stream=True,
-                    allow_redirects=True,
-                )
+                with new_arxiv_requests_session(pdf_url) as session:
+                    response = session.get(
+                        pdf_url,
+                        headers=headers,
+                        timeout=30,
+                        stream=True,
+                        allow_redirects=True,
+                    )
 
                 if response.status_code == 200:
                     chunk_count = 0
@@ -1339,7 +1711,7 @@ Now the input abstract is:
                 )
 
                 # Download file (urllib It is a one-time read and the progress cannot be updated during the download process)
-                with urllib.request.urlopen(req, timeout=30) as response:
+                with arxiv_urlopen(req, timeout=30) as response:
                     with open(pdf_path, "wb") as out_file:
                         out_file.write(response.read())
 
