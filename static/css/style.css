@@ -705,6 +705,27 @@ body {
     padding: 24px;
 }
 
+.recent-activity-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+}
+
+.recent-activity-header h3 {
+    font-size: 16px;
+    font-weight: 600;
+    color: #1f2937;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0;
+}
+
+.recent-activity-header h3 i {
+    color: #6b7280;
+}
+
 .recent-activity h3 {
     font-size: 16px;
     font-weight: 600;

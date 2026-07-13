@@ -405,6 +405,10 @@ fileInput.addEventListener('change', handleFileSelect);
     if (batchDelete) batchDelete.addEventListener('click', onBatchDelete);
     if (batchCancel) batchCancel.addEventListener('click', (e)=>{ e.stopPropagation(); exitMultiSelectMode(); });
 
+    // Recent Reading batch analyze button
+    const batchAnalyzeRecent = document.getElementById('batch-analyze-recent');
+    if (batchAnalyzeRecent) batchAnalyzeRecent.addEventListener('click', onBatchAnalyzeRecent);
+
     // Logo Click to return to the main interface
     const navbarBrand = document.getElementById('navbar-brand');
     const navbarLogo = document.getElementById('navbar-logo');
@@ -4621,9 +4625,67 @@ async function onBatchAnalyze() {
     if (selectedPaperIds.size === 0) { showMessage('Please select a paper first', 'warning'); return; }
     const ids = Array.from(selectedPaperIds);
     for (const id of ids) {
-        await requestAnalysis(id);
+        await requestAnalysis(id, null, true);  // skipConfirm=true for batch operation
     }
     // Interpretation has been submitted and the status column will be automatically updated.
+}
+
+// Batch analyze papers from current reading page
+async function onBatchAnalyzeRecent() {
+    try {
+        if (papers.length === 0) {
+            showMessage('No papers in current view', 'warning');
+            return;
+        }
+        
+        const settings = await getAgenticSettings();
+        if (!settings) {
+            showMessage('Please configure AI settings first (LLM API and MinerU)', 'warning');
+            document.querySelector('.nav-tab[data-tab="setting"]').click();
+            return;
+        }
+        
+        const useApi = settings.mineruUseApi === true;
+        const mineruConfigured = useApi 
+            ? (settings.mineruApiToken && settings.mineruApiToken.trim() !== '')
+            : (settings.mineruServerUrl && settings.mineruServerUrl.trim() !== '');
+        
+        if (!mineruConfigured || !settings.llmBaseUrl || !settings.llmApiKey) {
+            showMessage('Please configure AI settings first (LLM API and MinerU)', 'warning');
+            document.querySelector('.nav-tab[data-tab="setting"]').click();
+            return;
+        }
+        
+        let addedCount = 0;
+        for (const paper of papers) {
+            if (paper.has_analysis_result) {
+                continue;
+            }
+            if (analysisStatus[paper.id]) {
+                const status = analysisStatus[paper.id].status;
+                if (status === 'analyzing' || status === 'queued') {
+                    continue;
+                }
+            }
+            analysisQueue.push(paper.id);
+            const queuePosition = analysisQueue.length;
+            updateAnalysisStatus(paper.id, 'queued', queuePosition);
+            addedCount++;
+        }
+        
+        if (addedCount > 0) {
+            saveQueuesToStorage();
+            processAnalysisQueue();
+            updateTaskIndicator();
+            showMessage(`Added ${addedCount} papers to analysis queue`, 'success');
+        } else {
+            showMessage('All papers are already in analysis queue', 'info');
+        }
+        
+    } catch (e) {
+        console.error('Batch analyze recent failed:', e);
+        showMessage('Batch analyze failed', 'error');
+    }
 }
 
 async function onBatchTranslate() {
@@ -8038,7 +8100,8 @@ async function restoreActiveTasks() {
 }
 
 // askAI Interpretation
-async function requestAnalysis(paperId, event) {
+// skipConfirm: when true, skip the confirmation dialog for papers with existing analysis results (used for batch operations)
+async function requestAnalysis(paperId, event, skipConfirm = false) {
     if (event) {
         event.stopPropagation();
     }
@@ -8050,8 +8113,9 @@ async function requestAnalysis(paperId, event) {
     }
 
     // Check if interpretation results already exist
+    // Skip confirm dialog when skipConfirm is true (batch operations)
     const hasResult = paper.has_analysis_result;
-    if (hasResult) {
+    if (hasResult && !skipConfirm) {
         if (!confirm('This paper already has an AI Interpretation, reinterpret?')) {
             return;
         }
