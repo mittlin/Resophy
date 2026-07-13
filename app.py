@@ -95,6 +95,8 @@ DEFAULT_AGENTIC_SETTINGS = {
 }
 
 # Default Daily arXiv settings
+from resophy.tools.basic_tools.daily_arxiv_quality import get_default_quality_config
+
 DEFAULT_DAILY_ARXIV_SETTINGS = {
     "categories": ["cs.CV"],  # arXiv category list
     "checkIntervalMinutes": 30,  # Check interval (minutes)
@@ -178,6 +180,8 @@ Output JSON directly, no other explanations.
 
 Now the input abstract is:
 """,
+    # Quality filter (institution-tier prefilter for fetched papers)
+    "qualityConfig": get_default_quality_config(),
 }
 
 # Global variables (will be initialized in init_app)

@@ -18,10 +18,17 @@ from resophy.core.base_paper import Paper
 from resophy.core.paper_store import paper_store
 from resophy.tools.basic_tools.daily_arxiv import (
     DailyArxivManager,
+    build_daily_arxiv_summary_prompt,
     extract_affiliations_with_llm,
     extract_pdf_first_page_text,
+    extract_summary_and_keywords_with_llm,
     get_manager,
     get_today_arxiv_date,
+    is_valid_daily_arxiv_summary,
+)
+from resophy.tools.basic_tools.daily_arxiv_quality import (
+    get_default_quality_config,
+    normalize_quality_config,
 )
 from resophy.tools.basic_tools.upload_paper import fetch_bibtex_from_dblp
 
@@ -193,16 +200,112 @@ def register_daily_arxiv_routes(
                         merged[key] = value
                 else:
                     merged[key] = value
+            # Normalize the quality config (institution-tier filter) against defaults
+            merged["qualityConfig"] = normalize_quality_config(
+                {**get_default_quality_config(), **(merged.get("qualityConfig") or {})}
+            )
             return jsonify(merged)
 
         # POST: Save settings
         data = request.json or {}
         try:
+            data = dict(data)
+            data["qualityConfig"] = normalize_quality_config(
+                data.get("qualityConfig", {})
+            )
             with open(daily_arxiv_settings_file, "w", encoding="utf-8") as fp:
                 json.dump(data, fp, ensure_ascii=False, indent=2)
             return jsonify({"success": True})
         except Exception as exc:
             return jsonify({"success": False, "error": str(exc)}), 500
+
+    @app.route("/api/daily-arxiv/generate-summary", methods=["POST"])
+    def api_generate_daily_arxiv_summary():
+        """Manually (re)generate the brief summary + keywords for one paper."""
+        payload = request.json or {}
+        arxiv_id = payload.get("arxiv_id")
+        date_str = payload.get("date") or get_today_arxiv_date()
+        fetch_category = payload.get("fetch_category")
+
+        if not arxiv_id:
+            return jsonify({"success": False, "error": "arxiv_id is required"}), 400
+
+        llm_config = {}
+        if manager._get_llm_config:
+            llm_config = manager._get_llm_config() or {}
+        if not (
+            llm_config.get("llmModel")
+            and llm_config.get("llmBaseUrl")
+            and llm_config.get("llmApiKey")
+        ):
+            return jsonify({"success": False, "error": "LLM not configured"}), 400
+
+        papers = manager.get_papers_for_date(date_str, fetch_category)
+        paper_dict = next(
+            (p for p in papers if p.get("arxiv_id") == arxiv_id), None
+        )
+        if not paper_dict:
+            return jsonify({"success": False, "error": "paper not found"}), 404
+
+        abstract = paper_dict.get("abstract")
+        if not abstract:
+            return jsonify({"success": False, "error": "paper has no abstract"}), 400
+
+        settings = manager.get_settings()
+        user_settings = {}
+        if manager._get_user_settings:
+            try:
+                user_settings = manager._get_user_settings() or {}
+            except Exception:
+                user_settings = {}
+
+        summary_prompt = build_daily_arxiv_summary_prompt(settings, user_settings)
+
+        try:
+            summary_result = extract_summary_and_keywords_with_llm(
+                abstract,
+                llm_config["llmBaseUrl"],
+                llm_config["llmApiKey"],
+                llm_config["llmModel"],
+                prompt=summary_prompt,
+            )
+        except Exception as exc:
+            return jsonify({"success": False, "error": str(exc)}), 500
+
+        summary = summary_result.get("summary")
+        keywords = summary_result.get("keywords", [])
+        if not is_valid_daily_arxiv_summary(summary):
+            return (
+                jsonify({"success": False, "error": "generated summary is invalid"}),
+                500,
+            )
+
+        paper_cat_dir = manager.get_category_dir(
+            date_str,
+            paper_dict.get("fetch_category")
+            or fetch_category
+            or settings.get("categories", ["cs.CV"])[0],
+        )
+        safe_id = arxiv_id.replace("/", "_").replace(":", "_")
+        json_path = os.path.join(paper_cat_dir, f"{safe_id}.json")
+        paper_dict["summary"] = summary
+        paper_dict["keywords"] = keywords
+        paper_dict["summary_extracted"] = True
+        try:
+            with open(json_path, "w", encoding="utf-8") as fp:
+                json.dump(paper_dict, fp, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            print(f"[DailyArxiv] Failed to update paper json for {arxiv_id}: {exc}")
+        manager._save_paper(paper_dict, paper_cat_dir)
+
+        return jsonify(
+            {
+                "success": True,
+                "summary": summary,
+                "keywords": keywords,
+                "summary_extracted": True,
+            }
+        )
 
     # ========================================
     # Get Available Dates
