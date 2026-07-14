@@ -11640,6 +11640,9 @@ function renderDailyArxivGrid() {
                             <button class="daily-arxiv-card-action" onclick="event.stopPropagation(); window.open('https://arxiv.org/abs/${paper.arxiv_id}', '_blank')" title="exist arXiv Check">
                                 <i class="fas fa-external-link-alt"></i>
                             </button>
+                            <button class="daily-arxiv-card-action" onclick="event.stopPropagation(); onDailyArxivResync(${index}, event)" title="Re-sync (re-extract affiliations & summary)">
+                                <i class="fas fa-sync-alt"></i>
+                            </button>
                             ${(() => {
                                 // Check if the paper is on the to-read list
                                 const isInReadingList = paper.paper_id && readingListPaperIds.has(paper.paper_id);
@@ -11660,6 +11663,51 @@ function renderDailyArxivGrid() {
             </div>
         `;
     }).join('');
+}
+
+// Re-sync a single Daily arXiv paper (re-extract affiliations & summary)
+async function onDailyArxivResync(index, event) {
+    event.stopPropagation();
+    const papers = getCurrentDailyArxivPapers();
+    const paper = papers[index];
+    if (!paper || !paper.arxiv_id) return;
+
+    const btn = event.currentTarget;
+    const originalHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-sync-alt fa-spin"></i>';
+
+    try {
+        const res = await fetch('/api/daily-arxiv/sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                arxiv_id: paper.arxiv_id,
+                date: dailyArxivCurrentDate,
+                fetch_category: paper.fetch_category
+            })
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+            const updated = data.updated || {};
+            Object.keys(dailyArxivPapers).forEach(key => {
+                (dailyArxivPapers[key] || []).forEach(p => {
+                    if (p.arxiv_id === paper.arxiv_id) {
+                        Object.assign(p, updated);
+                    }
+                });
+            });
+            showMessage('Paper re-synced', 'success');
+            renderDailyArxivGrid();
+        } else {
+            showMessage(data.error || 'Sync failed', 'error');
+        }
+    } catch (err) {
+        showMessage('Sync failed: ' + err, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalHtml;
+    }
 }
 
 // Render unit filter

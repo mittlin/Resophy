@@ -310,6 +310,121 @@ def register_daily_arxiv_routes(
             }
         )
 
+    @app.route("/api/daily-arxiv/sync", methods=["POST"])
+    def api_sync_daily_arxiv_paper():
+        """Re-sync a single paper: re-extract affiliations and (re)generate summary."""
+        try:
+            llm_config = {}
+            if manager._get_llm_config:
+                llm_config = manager._get_llm_config() or {}
+            if not (
+                llm_config.get("llmModel")
+                and llm_config.get("llmBaseUrl")
+                and llm_config.get("llmApiKey")
+            ):
+                return (
+                    jsonify({"success": False, "error": "LLM not configured"}),
+                    400,
+                )
+
+            data = request.json or {}
+            arxiv_id = data.get("arxiv_id")
+            date_str = data.get("date") or get_today_arxiv_date()
+            fetch_category = data.get("fetch_category")
+
+            if not arxiv_id:
+                return (
+                    jsonify({"success": False, "error": "arxiv_id is required"}),
+                    400,
+                )
+
+            papers = manager.get_papers_for_date(date_str, fetch_category)
+            paper_dict = next(
+                (p for p in papers if p.get("arxiv_id") == arxiv_id), None
+            )
+            if not paper_dict:
+                return jsonify({"success": False, "error": "paper not found"}), 404
+
+            base_url = str(llm_config["llmBaseUrl"]).strip()
+            api_key = str(llm_config["llmApiKey"]).strip()
+            model = str(llm_config["llmModel"]).strip()
+
+            settings = manager.get_settings()
+            user_settings = {}
+            if manager._get_user_settings:
+                try:
+                    user_settings = manager._get_user_settings() or {}
+                except Exception:
+                    user_settings = {}
+
+            updated: Dict[str, Any] = {}
+
+            # Re-extract affiliations from the existing first-page PDF text.
+            pdf_path = paper_dict.get("local_pdf_path")
+            if pdf_path and os.path.exists(pdf_path):
+                try:
+                    affiliation_prompt = settings.get("affiliationPrompt")
+                    extraction = extract_affiliations_with_llm(
+                        extract_pdf_first_page_text(pdf_path) or "",
+                        base_url,
+                        api_key,
+                        model,
+                        prompt=affiliation_prompt,
+                        settings_file=daily_arxiv_settings_file,
+                    )
+                    if extraction:
+                        paper_dict["affiliations"] = extraction.get("affiliations", [])
+                        paper_dict["countries"] = extraction.get("countries", [])
+                        paper_dict["homepage"] = extraction.get("homepage")
+                        paper_dict["github"] = extraction.get("github")
+                        paper_dict["affiliations_extracted"] = True
+                        updated["affiliations"] = paper_dict["affiliations"]
+                        updated["homepage"] = paper_dict["homepage"]
+                        updated["github"] = paper_dict["github"]
+                except Exception as exc:
+                    print(
+                        f"[DailyArxiv] Re-extract affiliations failed for {arxiv_id}: {exc}"
+                    )
+
+            # Re-generate summary if an abstract is available.
+            abstract = paper_dict.get("abstract")
+            if abstract:
+                try:
+                    summary_prompt = build_daily_arxiv_summary_prompt(
+                        settings, user_settings
+                    )
+                    summary_result = extract_summary_and_keywords_with_llm(
+                        abstract,
+                        base_url,
+                        api_key,
+                        model,
+                        prompt=summary_prompt,
+                    )
+                    summary = summary_result.get("summary")
+                    keywords = summary_result.get("keywords", [])
+                    if is_valid_daily_arxiv_summary(summary):
+                        paper_dict["summary"] = summary
+                        paper_dict["keywords"] = keywords
+                        paper_dict["summary_extracted"] = True
+                        updated["summary"] = summary
+                        updated["keywords"] = keywords
+                except Exception as exc:
+                    print(
+                        f"[DailyArxiv] Re-generate summary failed for {arxiv_id}: {exc}"
+                    )
+
+            cat_dir = manager.get_category_dir(
+                date_str,
+                paper_dict.get("fetch_category")
+                or fetch_category
+                or settings.get("categories", ["cs.CV"])[0],
+            )
+            manager._save_paper(paper_dict, cat_dir)
+
+            return jsonify({"success": True, "updated": updated})
+        except Exception as exc:
+            return jsonify({"success": False, "error": str(exc)}), 500
+
     # ========================================
     # Get Available Dates
     # ========================================
