@@ -10556,17 +10556,10 @@ function showRoundedNotification(message, type = 'error', persistent = true, not
 
 // Trigger crawling of papers（current partition）
 async function triggerFetchPapers(force = false) {
-    // examine LLM Configuration
+    // LLM is optional: when not configured we still fetch (PDF/thumbnail only,
+    // summary/affiliations deferred) — backend feature C no-LLM tolerance.
     if (!dailyArxivLLMConfigured) {
-        showRoundedNotification('Please configure it in settings first LLM API（Model、Base URL、API Key）', 'warning');
-        // Switch to settings page
-        switchTab('setting');
-        // switch to Agentic settings panel
-        setTimeout(() => {
-            const agenticBtn = document.querySelector('[data-setting="agentic"]');
-            if (agenticBtn) agenticBtn.click();
-        }, 100);
-        return;
+        showMessage('LLM API 未配置：将仅下载 PDF 与缩略图，不生成摘要/关键词/机构信息', 'warning');
     }
     
     if (dailyArxivCategories.length === 0) {
@@ -10577,27 +10570,29 @@ async function triggerFetchPapers(force = false) {
     if (!dailyArxivCurrentCategory) {
         dailyArxivCurrentCategory = dailyArxivCategories[0];
     }
-    
-    // Test before crawling LLM API
-    const testResult = await testLLMAPIForDailyArxiv();
-    if (!testResult.success) {
-        const actionButton = `
-            <button class="notification-action-btn" onclick="restartDailyArxivFetch()" style="
-                background: #c62828;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                padding: 4px 12px;
-                font-size: 12px;
-                cursor: pointer;
-                margin-left: 8px;
-                transition: background 0.2s;
-            " onmouseover="this.style.background='#a02020'" onmouseout="this.style.background='#c62828'" title="Retest and start crawling">
-                <i class="fas fa-redo"></i> Restart crawling
-            </button>
-        `;
-        showRoundedNotification('LLM API Call failed, stop Daily arXiv,Check, please LLM API set up.', 'error', true, 'daily-arxiv-api-notification', actionButton);
-        return;
+
+    // Test before crawling LLM API (only when LLM is configured)
+    if (dailyArxivLLMConfigured) {
+        const testResult = await testLLMAPIForDailyArxiv();
+        if (!testResult.success) {
+            const actionButton = `
+                <button class="notification-action-btn" onclick="restartDailyArxivFetch()" style="
+                    background: #c62828;
+                    color: white;
+                    border: none;
+                    border-radius: 4px;
+                    padding: 4px 12px;
+                    font-size: 12px;
+                    cursor: pointer;
+                    margin-left: 8px;
+                    transition: background 0.2s;
+                " onmouseover="this.style.background='#a02020'" onmouseout="this.style.background='#c62828'" title="Retest and start crawling">
+                    <i class="fas fa-redo"></i> Restart crawling
+                </button>
+            `;
+            showRoundedNotification('LLM API Call failed, stop Daily arXiv,Check, please LLM API set up.', 'error', true, 'daily-arxiv-api-notification', actionButton);
+            return;
+        }
     }
     
     try {
@@ -10630,44 +10625,39 @@ async function triggerFetchPapers(force = false) {
 
 // Triggers crawling of papers in all partitions
 async function triggerFetchAllCategories(force = false, dateStr = null) {
-    // examine LLM Configuration
+    // LLM is optional: when not configured we still fetch (PDF/thumbnail only,
+    // summary/affiliations deferred) — backend feature C no-LLM tolerance.
     if (!dailyArxivLLMConfigured) {
-        showRoundedNotification('Please configure it in settings first LLM API（Model、Base URL、API Key）', 'warning');
-        // Switch to settings page
-        switchTab('setting');
-        // switch to Agentic settings panel
-        setTimeout(() => {
-            const agenticBtn = document.querySelector('[data-setting="agentic"]');
-            if (agenticBtn) agenticBtn.click();
-        }, 100);
-        return;
+        showMessage('LLM API 未配置：将仅下载 PDF 与缩略图，不生成摘要/关键词/机构信息', 'warning');
     }
     
     if (dailyArxivCategories.length === 0) {
         showMessage('Please configure first arXiv Partition', 'warning');
         return;
     }
-    
-    // Test before crawling LLM API
-    const testResult = await testLLMAPIForDailyArxiv();
-    if (!testResult.success) {
-        const actionButton = `
-            <button class="notification-action-btn" onclick="restartDailyArxivFetch()" style="
-                background: #c62828;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                padding: 4px 12px;
-                font-size: 12px;
-                cursor: pointer;
-                margin-left: 8px;
-                transition: background 0.2s;
-            " onmouseover="this.style.background='#a02020'" onmouseout="this.style.background='#c62828'" title="Retest and start crawling">
-                <i class="fas fa-redo"></i> Restart crawling
-            </button>
-        `;
-        showRoundedNotification('LLM API Call failed, stop Daily arXiv,Check, please LLM API set up.', 'error', true, 'daily-arxiv-api-notification', actionButton);
-        return;
+
+    // Test before crawling LLM API (only when LLM is configured)
+    if (dailyArxivLLMConfigured) {
+        const testResult = await testLLMAPIForDailyArxiv();
+        if (!testResult.success) {
+            const actionButton = `
+                <button class="notification-action-btn" onclick="restartDailyArxivFetch()" style="
+                    background: #c62828;
+                    color: white;
+                    border: none;
+                    border-radius: 4px;
+                    padding: 4px 12px;
+                    font-size: 12px;
+                    cursor: pointer;
+                    margin-left: 8px;
+                    transition: background 0.2s;
+                " onmouseover="this.style.background='#a02020'" onmouseout="this.style.background='#c62828'" title="Retest and start crawling">
+                    <i class="fas fa-redo"></i> Restart crawling
+                </button>
+            `;
+            showRoundedNotification('LLM API Call failed, stop Daily arXiv,Check, please LLM API set up.', 'error', true, 'daily-arxiv-api-notification', actionButton);
+            return;
+        }
     }
     
     try {
@@ -11392,7 +11382,15 @@ function renderDailyArxivGrid() {
                         <div class="daily-arxiv-waiting" style="display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 400px; text-align: center; color: #666; width: 100%;">
                             <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 20px; color: #f39c12;"></i>
                             <h3 style="margin-bottom: 10px; font-size: 1.5em; color: #555;">LLM API Not configured</h3>
-                            <p style="margin-bottom: 30px; font-size: 1em; color: #888;">Daily arXiv needs to be configured with LLM API. Please configure in settings LLM API（Model、Base URL、API Key）</p>
+                            <p style="margin-bottom: 30px; font-size: 1em; color: #888;">未配置 LLM API，点击抓取将仅下载 PDF 与缩略图，不生成摘要/关键词/机构信息。仍可在设置中配置 LLM API 后再抓取。</p>
+                            <div style="display: flex; gap: 10px; flex-wrap: wrap; justify-content: center;">
+                                <button class="btn btn-primary" onclick="triggerFetchPapers(false)">
+                                    <i class="fas fa-sync"></i> Grab the current partition
+                                </button>
+                                <button class="btn btn-secondary" onclick="triggerFetchAllCategories(false)">
+                                    <i class="fas fa-sync-alt"></i> Fetch all partitions
+                                </button>
+                            </div>
                             <div style="display: flex; gap: 10px; flex-wrap: wrap; justify-content: center;">
                                 <button class="btn btn-primary" onclick="switchTab('setting'); setTimeout(() => { const btn = document.querySelector('[data-setting=\\'agentic\\']'); if (btn) btn.click(); }, 100);">
                                     <i class="fas fa-cog"></i> Go to settings

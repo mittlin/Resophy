@@ -1612,27 +1612,49 @@ Now the input abstract is:
                         if thumbnail_path:
                             paper.thumbnail_path = thumbnail_path
 
-                    # extraction mechanism,homepage and github(from PDF First page)
-                    if (
-                        llm_config.get("llmBaseUrl")
-                        and llm_config.get("llmApiKey")
-                        and llm_config.get("llmModel")
-                        and not paper.affiliations_extracted
-                    ):
-                        extraction_result = self._extract_affiliations(
-                            pdf_path,
-                            llm_config["llmBaseUrl"],
-                            llm_config["llmApiKey"],
-                            llm_config["llmModel"],
-                            prompt=affiliation_prompt,
-                        )
-                        paper.affiliations = extraction_result.get(
-                            "affiliations", []
-                        )
-                        paper.countries = extraction_result.get("countries", [])
-                        paper.homepage = extraction_result.get("homepage")
-                        paper.github = extraction_result.get("github")
-                        paper.affiliations_extracted = True
+                        # extraction mechanism,homepage and github(from PDF First page)
+                        # Only when LLM is configured and not already extracted. When LLM
+                        # is not configured the PDF/thumbnail are still kept; summary and
+                        # affiliations can be filled later via the manual summary endpoint
+                        # or a re-fetch.
+                        if (
+                            llm_config.get("llmBaseUrl")
+                            and llm_config.get("llmApiKey")
+                            and llm_config.get("llmModel")
+                            and not paper.affiliations_extracted
+                        ):
+                            extraction_result = self._extract_affiliations(
+                                pdf_path,
+                                llm_config["llmBaseUrl"],
+                                llm_config["llmApiKey"],
+                                llm_config["llmModel"],
+                                prompt=affiliation_prompt,
+                            )
+                            paper.affiliations = extraction_result.get(
+                                "affiliations", []
+                            )
+                            paper.countries = extraction_result.get("countries", [])
+                            paper.homepage = extraction_result.get("homepage")
+                            paper.github = extraction_result.get("github")
+                            paper.affiliations_extracted = True
+
+                        # Extract abstracts and keywords (from abstract)
+                        if (
+                            llm_config.get("llmBaseUrl")
+                            and llm_config.get("llmApiKey")
+                            and llm_config.get("llmModel")
+                            and paper.abstract
+                        ):
+                            summary_result = extract_summary_and_keywords_with_llm(
+                                paper.abstract,
+                                llm_config["llmBaseUrl"],
+                                llm_config["llmApiKey"],
+                                llm_config["llmModel"],
+                                prompt=summary_prompt,
+                            )
+                            paper.summary = summary_result.get("summary")
+                            paper.keywords = summary_result.get("keywords", [])
+                            paper.summary_extracted = True
                     else:
                         # PDF Download failed, removed from status (will download again next time)
                         download_status = self._load_download_status(
@@ -1647,25 +1669,6 @@ Now the input abstract is:
                         print(
                             f"[DailyArxiv] PDF Download failed, will try again at next check: {paper.arxiv_id}"
                         )
-
-                    # Extract abstracts and keywords (from abstract）
-                    # NOTE: Even if PDF Download failed, you can also extract abstracts and keywords
-                    if (
-                        llm_config.get("llmBaseUrl")
-                        and llm_config.get("llmApiKey")
-                        and llm_config.get("llmModel")
-                        and paper.abstract
-                    ):
-                        summary_result = extract_summary_and_keywords_with_llm(
-                            paper.abstract,
-                            llm_config["llmBaseUrl"],
-                            llm_config["llmApiKey"],
-                            llm_config["llmModel"],
-                            prompt=summary_prompt,
-                        )
-                        paper.summary = summary_result.get("summary")
-                        paper.keywords = summary_result.get("keywords", [])
-                        paper.summary_extracted = True
 
                     # Save paper metadata to the correct date directory
                     # even though PDF If the download fails, the metadata is also saved so that you can try again next time.
