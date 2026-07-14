@@ -224,14 +224,16 @@ def register_daily_arxiv_routes(
 
     @app.route("/api/daily-arxiv/generate-summary", methods=["POST"])
     def api_generate_daily_arxiv_summary():
-        """Manually (re)generate the brief summary + keywords for one paper."""
+        """Manually (re)generate the brief summary + keywords for one paper.
+
+        Batch mode: omit arxiv_id and pass onlyMissing:true with date to
+        generate summaries for all papers missing one.
+        """
         payload = request.json or {}
         arxiv_id = payload.get("arxiv_id")
         date_str = payload.get("date") or get_today_arxiv_date()
         fetch_category = payload.get("fetch_category")
-
-        if not arxiv_id:
-            return jsonify({"success": False, "error": "arxiv_id is required"}), 400
+        only_missing = bool(payload.get("onlyMissing", False))
 
         llm_config = {}
         if manager._get_llm_config:
@@ -243,6 +245,94 @@ def register_daily_arxiv_routes(
         ):
             return jsonify({"success": False, "error": "LLM not configured"}), 400
 
+        settings = manager.get_settings()
+        user_settings = {}
+        if manager._get_user_settings:
+            try:
+                user_settings = manager._get_user_settings() or {}
+            except Exception:
+                user_settings = {}
+        summary_prompt = build_daily_arxiv_summary_prompt(settings, user_settings)
+
+        def _generate_for(paper_dict: Dict[str, Any]):
+            """Generate + persist a summary for one paper.
+
+            Returns ``(result_dict, error_str)``; exactly one is non-None.
+            """
+            aid = paper_dict.get("arxiv_id")
+            abstract = paper_dict.get("abstract")
+            if not abstract:
+                return None, "no abstract"
+            try:
+                summary_result = extract_summary_and_keywords_with_llm(
+                    abstract,
+                    llm_config["llmBaseUrl"],
+                    llm_config["llmApiKey"],
+                    llm_config["llmModel"],
+                    prompt=summary_prompt,
+                )
+            except Exception as exc:
+                return None, str(exc)
+
+            summary = summary_result.get("summary")
+            keywords = summary_result.get("keywords", [])
+            if not is_valid_daily_arxiv_summary(summary):
+                return None, "invalid summary"
+
+            cat_dir = manager.get_category_dir(
+                date_str,
+                paper_dict.get("fetch_category")
+                or fetch_category
+                or settings.get("categories", ["cs.CV"])[0],
+            )
+            paper_dict["summary"] = summary
+            paper_dict["keywords"] = keywords
+            paper_dict["summary_extracted"] = True
+            try:
+                manager._save_paper(paper_dict, cat_dir)
+            except Exception as exc:
+                print(f"[DailyArxiv] Failed to update paper json for {aid}: {exc}")
+            return {"summary": summary, "keywords": keywords}, None
+
+        # ---- Batch mode ----
+        if not arxiv_id:
+            if not only_missing:
+                return (
+                    jsonify(
+                        {
+                            "success": False,
+                            "error": "arxiv_id is required for single mode, or set onlyMissing:true for batch mode",
+                        }
+                    ),
+                    400,
+                )
+            papers = manager.get_papers_for_date(date_str, fetch_category)
+            generated = 0
+            skipped = 0
+            failed = 0
+            for p in papers:
+                if is_valid_daily_arxiv_summary(p.get("summary")):
+                    skipped += 1
+                    continue
+                result, err = _generate_for(p)
+                if result:
+                    generated += 1
+                else:
+                    failed += 1
+                    print(
+                        f"[DailyArxiv] Batch summary generation failed for "
+                        f"{p.get('arxiv_id')}: {err}"
+                    )
+            return jsonify(
+                {
+                    "success": True,
+                    "generated": generated,
+                    "skipped": skipped,
+                    "failed": failed,
+                }
+            )
+
+        # ---- Single mode ----
         papers = manager.get_papers_for_date(date_str, fetch_category)
         paper_dict = next(
             (p for p in papers if p.get("arxiv_id") == arxiv_id), None

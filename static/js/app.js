@@ -9684,6 +9684,12 @@ async function initDailyArxiv() {
     if (settingsBtn) {
         settingsBtn.addEventListener('click', showDailyArxivSettingsModal);
     }
+
+    // Batch-generate summaries for all papers missing one (current date + category)
+    const batchSummaryBtn = document.getElementById('daily-arxiv-batch-summary');
+    if (batchSummaryBtn) {
+        batchSummaryBtn.addEventListener('click', onDailyArxivBatchSummary);
+    }
     
     // date navigation buttons
     const prevDateBtn = document.getElementById('daily-arxiv-prev-date');
@@ -11770,6 +11776,52 @@ async function onDailyArxivToggleRead(index, event) {
         }
     } catch (err) {
         showMessage('Failed to update read status: ' + err, 'error');
+    }
+}
+
+// Batch-generate summaries for all papers in the current date/category that
+// do not yet have a valid summary.
+async function onDailyArxivBatchSummary() {
+    if (!dailyArxivLLMConfigured) {
+        showMessage('Please configure LLM API first (Settings → Agentic)', 'error');
+        return;
+    }
+    const category = dailyArxivCurrentCategory === 'all' ? null : dailyArxivCurrentCategory;
+    const btn = document.getElementById('daily-arxiv-batch-summary');
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating...';
+    }
+    showMessage('Batch-generating summaries...', 'info', 3000);
+    try {
+        const res = await fetch('/api/daily-arxiv/generate-summary', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                date: dailyArxivCurrentDate,
+                fetch_category: category,
+                onlyMissing: true
+            })
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+            const parts = [];
+            if (data.generated) parts.push(`${data.generated} generated`);
+            if (data.skipped) parts.push(`${data.skipped} skipped`);
+            if (data.failed) parts.push(`${data.failed} failed`);
+            showMessage('Batch summary: ' + (parts.join(', ') || 'done'), 'success', 4000);
+            // Refresh the grid so newly generated summaries show up
+            await loadPapersForCurrentDate();
+        } else {
+            showMessage(data.error || 'Batch summary failed', 'error');
+        }
+    } catch (err) {
+        showMessage('Batch summary failed: ' + err, 'error');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fas fa-magic"></i> Batch summary';
+        }
     }
 }
 
