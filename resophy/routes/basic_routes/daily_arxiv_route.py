@@ -426,6 +426,37 @@ def register_daily_arxiv_routes(
             return jsonify({"success": False, "error": str(exc)}), 500
 
     # ========================================
+    # Read Status (JSON persistence, no DB)
+    # ========================================
+    @app.route("/api/daily-arxiv/read/status", methods=["GET"])
+    def api_get_read_status():
+        """Get the full read-status map {arxiv_id: read_bool}."""
+        try:
+            return jsonify(
+                {"success": True, "readStatus": manager.get_all_read_status()}
+            )
+        except Exception as exc:
+            return jsonify({"success": False, "error": str(exc)}), 500
+
+    @app.route("/api/daily-arxiv/read/mark", methods=["POST"])
+    def api_mark_read():
+        """Mark a paper as read/unread. Body: {arxiv_id, read}."""
+        try:
+            data = request.json or {}
+            arxiv_id = data.get("arxiv_id")
+            read = bool(data.get("read", True))
+            if not arxiv_id:
+                return jsonify({"success": False, "error": "arxiv_id is required"}), 400
+            ok = manager.set_paper_read(arxiv_id, read)
+            if not ok:
+                return jsonify({"success": False, "error": "invalid arxiv_id"}), 400
+            return jsonify(
+                {"success": True, "arxiv_id": arxiv_id, "read": read}
+            )
+        except Exception as exc:
+            return jsonify({"success": False, "error": str(exc)}), 500
+
+    # ========================================
     # Get Available Dates
     # ========================================
     @app.route("/api/daily-arxiv/dates", methods=["GET"])

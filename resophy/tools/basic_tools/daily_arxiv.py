@@ -939,6 +939,8 @@ class DailyArxivManager:
         self.base_dir = base_dir
         self.settings_file = settings_file
         self.metadata_file = os.path.join(base_dir, "metadata.json")
+        self.read_status_file = os.path.join(base_dir, "daily_arxiv_read_status.json")
+        self._read_status_lock = threading.Lock()
 
         os.makedirs(base_dir, exist_ok=True)
 
@@ -995,6 +997,55 @@ class DailyArxivManager:
                 json.dump(self._metadata, f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"[DailyArxiv] Failed to save metadata: {e}")
+
+    # ============================================================
+    # Read status persistence (JSON file, no DB layer)
+    # ============================================================
+    def _load_read_status(self) -> Dict[str, bool]:
+        """Load the read-status map {arxiv_id: read_bool}."""
+        if not os.path.exists(self.read_status_file):
+            return {}
+        try:
+            with open(self.read_status_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return {str(k): bool(v) for k, v in data.items()}
+        except Exception as e:
+            print(f"[DailyArxiv] Failed to load read status: {e}")
+        return {}
+
+    def _save_read_status(self, status: Dict[str, bool]):
+        """Persist the read-status map atomically."""
+        try:
+            tmp = self.read_status_file + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(status, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, self.read_status_file)
+        except Exception as e:
+            print(f"[DailyArxiv] Failed to save read status: {e}")
+
+    def is_paper_read(self, arxiv_id: str) -> bool:
+        """Return whether a paper has been marked as read."""
+        if not arxiv_id:
+            return False
+        return self._load_read_status().get(arxiv_id, False)
+
+    def set_paper_read(self, arxiv_id: str, read: bool) -> bool:
+        """Mark a paper as read/unread; returns True on success."""
+        if not arxiv_id:
+            return False
+        with self._read_status_lock:
+            status = self._load_read_status()
+            if read:
+                status[arxiv_id] = True
+            else:
+                status.pop(arxiv_id, None)
+            self._save_read_status(status)
+        return True
+
+    def get_all_read_status(self) -> Dict[str, bool]:
+        """Return the full read-status map {arxiv_id: read_bool}."""
+        return self._load_read_status()
 
     def get_settings(self) -> Dict:
         """Get settings (normalized)"""

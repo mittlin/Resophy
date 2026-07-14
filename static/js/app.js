@@ -9276,6 +9276,7 @@ let dailyArxivSettings = {
 let dailyArxivProgressIntervals = {};  // Progress polling timer for each partition: {category: intervalId}
 let dailyArxivSearchQuery = '';        // Daily arXiv Page search query
 let dailyArxivLLMConfigured = false;  // LLM configuration status
+let dailyArxivReadStatus = {};       // Read-status map: {arxiv_id: bool}
 let dailyArxivSlowDownloadNotified = {};  // Log whether each partition has shown a slow download prompt: {category: true}
 let dailyArxivLastPaperKey = '';  // Keep track of the previous paperkey, used to detect paper switching
 let dailyArxivSelectedAffiliations = new Set(); // Currently selected unit filter
@@ -10100,11 +10101,27 @@ async function loadPapersForCurrentDate() {
     }
     
     // After the paper data is loaded, first refresh the filter options and then render the grid.
+    await loadDailyArxivReadStatus();
     renderDailyArxivFilterAffiliations();
     renderDailyArxivFilterCountries();
     renderDailyArxivFilterKeywords();
     renderDailyArxivGrid();
     renderDailyArxivCategoryTags();
+}
+
+// Load the read-status map from the server (keyed by arxiv_id, independent of date)
+async function loadDailyArxivReadStatus() {
+    try {
+        const res = await fetch('/api/daily-arxiv/read/status');
+        if (res.ok) {
+            const data = await res.json();
+            if (data.success && data.readStatus) {
+                dailyArxivReadStatus = data.readStatus || {};
+            }
+        }
+    } catch (err) {
+        console.error('Failed to load read status:', err);
+    }
 }
 
 // Auto save Daily arXiv set up（Anti-shake）
@@ -11609,7 +11626,7 @@ function renderDailyArxivGrid() {
         const highlight = (text) => highlightDailyArxiv(text);
 
         return `
-            <div class="daily-arxiv-card" data-index="${index}" onclick="showDailyArxivDetail(${index})">
+            <div class="daily-arxiv-card${dailyArxivReadStatus[paper.arxiv_id] ? ' daily-arxiv-card-read' : ''}" data-index="${index}" onclick="showDailyArxivDetail(${index})">
                 <div class="daily-arxiv-card-thumbnail">
                     ${thumbnailHtml}
                     <div class="daily-arxiv-card-thumbnail-badges">
@@ -11639,6 +11656,9 @@ function renderDailyArxivGrid() {
                             </button>` : ''}
                             <button class="daily-arxiv-card-action" onclick="event.stopPropagation(); window.open('https://arxiv.org/abs/${paper.arxiv_id}', '_blank')" title="exist arXiv Check">
                                 <i class="fas fa-external-link-alt"></i>
+                            </button>
+                            <button class="daily-arxiv-card-action" onclick="event.stopPropagation(); onDailyArxivToggleRead(${index}, event)" title="${dailyArxivReadStatus[paper.arxiv_id] ? 'Mark as unread' : 'Mark as read'}">
+                                <i class="fas ${dailyArxivReadStatus[paper.arxiv_id] ? 'fa-envelope-open' : 'fa-envelope'}"></i>
                             </button>
                             <button class="daily-arxiv-card-action" onclick="event.stopPropagation(); onDailyArxivResync(${index}, event)" title="Re-sync (re-extract affiliations & summary)">
                                 <i class="fas fa-sync-alt"></i>
@@ -11707,6 +11727,49 @@ async function onDailyArxivResync(index, event) {
     } finally {
         btn.disabled = false;
         btn.innerHTML = originalHtml;
+    }
+}
+
+// Toggle the read/unread status of a Daily arXiv paper
+async function onDailyArxivToggleRead(index, event) {
+    event.stopPropagation();
+    const papers = getCurrentDailyArxivPapers();
+    const paper = papers[index];
+    if (!paper || !paper.arxiv_id) return;
+
+    const arxivId = paper.arxiv_id;
+    const newRead = !dailyArxivReadStatus[arxivId];
+
+    // Optimistic update + re-render
+    if (newRead) {
+        dailyArxivReadStatus[arxivId] = true;
+    } else {
+        delete dailyArxivReadStatus[arxivId];
+    }
+    renderDailyArxivGrid();
+
+    try {
+        const res = await fetch('/api/daily-arxiv/read/mark', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                arxiv_id: arxivId,
+                read: newRead
+            })
+        });
+        const data = await res.json();
+        if (!(res.ok && data.success)) {
+            // Rollback on failure
+            if (newRead) {
+                delete dailyArxivReadStatus[arxivId];
+            } else {
+                dailyArxivReadStatus[arxivId] = true;
+            }
+            renderDailyArxivGrid();
+            showMessage(data.error || 'Failed to update read status', 'error');
+        }
+    } catch (err) {
+        showMessage('Failed to update read status: ' + err, 'error');
     }
 }
 
