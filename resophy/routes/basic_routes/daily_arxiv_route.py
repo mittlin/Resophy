@@ -842,6 +842,18 @@ def register_daily_arxiv_routes(
             llm_config = get_llm_config()
             openai_base_url = llm_config.get("llmBaseUrl")
             openai_api_key = llm_config.get("llmApiKey")
+            openai_model = llm_config.get("llmModel")
+
+            if not (openai_base_url and openai_api_key and openai_model):
+                return (
+                    jsonify(
+                        {
+                            "success": False,
+                            "error": "Please configure it in settings first Agentic Settings of LLM API",
+                        }
+                    ),
+                    400,
+                )
 
             if not openai_base_url or not openai_api_key:
                 return (
@@ -879,6 +891,7 @@ def register_daily_arxiv_routes(
                 extract_pdf_first_page_text(pdf_path) or "",
                 openai_base_url,
                 openai_api_key,
+                openai_model,
                 prompt=affiliation_prompt,
                 settings_file=daily_arxiv_settings_file,
             )
