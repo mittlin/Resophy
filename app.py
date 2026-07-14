@@ -182,6 +182,9 @@ Now the input abstract is:
 """,
     # Quality filter (institution-tier prefilter for fetched papers)
     "qualityConfig": get_default_quality_config(),
+    # Daily budget + per-category quota ratios (sum to 100%)
+    "maxDailyPapers": 50,
+    "categoryRatios": {},
 }
 
 # Global variables (will be initialized in init_app)

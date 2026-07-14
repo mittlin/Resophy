@@ -25,10 +25,8 @@ from resophy.tools.basic_tools.daily_arxiv import (
     get_manager,
     get_today_arxiv_date,
     is_valid_daily_arxiv_summary,
-)
-from resophy.tools.basic_tools.daily_arxiv_quality import (
-    get_default_quality_config,
-    normalize_quality_config,
+    normalize_daily_arxiv_settings,
+    validate_arxiv_category_ratios,
 )
 from resophy.tools.basic_tools.upload_paper import fetch_bibtex_from_dblp
 
@@ -200,19 +198,24 @@ def register_daily_arxiv_routes(
                         merged[key] = value
                 else:
                     merged[key] = value
-            # Normalize the quality config (institution-tier filter) against defaults
-            merged["qualityConfig"] = normalize_quality_config(
-                {**get_default_quality_config(), **(merged.get("qualityConfig") or {})}
-            )
+            # Normalize settings (categories, ratios, daily quota, qualityConfig)
+            merged = normalize_daily_arxiv_settings(merged)
             return jsonify(merged)
 
         # POST: Save settings
         data = request.json or {}
         try:
             data = dict(data)
-            data["qualityConfig"] = normalize_quality_config(
-                data.get("qualityConfig", {})
+            ratio_error = validate_arxiv_category_ratios(
+                data.get("categoryRatios", {}),
+                data.get("categories", []),
             )
+            if ratio_error:
+                return (
+                    jsonify({"success": False, "error": ratio_error}),
+                    400,
+                )
+            data = normalize_daily_arxiv_settings(data)
             with open(daily_arxiv_settings_file, "w", encoding="utf-8") as fp:
                 json.dump(data, fp, ensure_ascii=False, indent=2)
             return jsonify({"success": True})

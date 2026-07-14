@@ -105,6 +105,316 @@ Now the input abstract is:
 """
 
 
+# Daily arXiv budget + per-category quota/ratio configuration.
+DEFAULT_MAX_DAILY_PAPERS = 50
+MIN_MAX_DAILY_PAPERS = 1
+MAX_MAX_DAILY_PAPERS = 500
+DEFAULT_MAX_NEW_PAPERS_PER_CATEGORY_PER_FETCH = 3
+DAILY_CATEGORY_RATIO_TOTAL = 100.0
+DAILY_CATEGORY_RATIO_TOLERANCE = 0.0001
+DEFAULT_CATEGORY_WEIGHT = 1.0
+
+ARXIV_CATEGORY_WEIGHT_OVERRIDES = {
+    # High-volume AI categories get slightly lower quota weight so they do not
+    # consume the whole daily budget before niche categories run.
+    "cs.AI": 0.85,
+    "cs.CV": 0.9,
+    "cs.LG": 0.9,
+    "cs.CL": 0.95,
+    "stat.ML": 0.95,
+    # Systems/infrastructure categories are typically lower-volume but important
+    # enough to reserve more of the daily budget when configured by the user.
+    "cs.DC": 1.6,
+    "cs.OS": 1.6,
+    "cs.NI": 1.45,
+    "cs.PF": 1.45,
+    "cs.AR": 1.35,
+    "cs.DB": 1.25,
+    "cs.SE": 1.25,
+    "cs.CR": 1.25,
+}
+
+
+def normalize_arxiv_category(category: str) -> str:
+    if not isinstance(category, str):
+        return ""
+    category = category.strip()
+    if not category:
+        return ""
+    if "." in category:
+        prefix, suffix = category.split(".", 1)
+        return f"{prefix.lower()}.{suffix.upper()}"
+    return category.lower()
+
+
+def normalize_arxiv_category_list(categories: Any) -> List[str]:
+    if not isinstance(categories, list):
+        return []
+
+    normalized: List[str] = []
+    seen = set()
+    for category in categories:
+        normalized_category = normalize_arxiv_category(category)
+        if not normalized_category or normalized_category in seen:
+            continue
+        seen.add(normalized_category)
+        normalized.append(normalized_category)
+    return normalized
+
+
+def normalize_arxiv_category_ratios(
+    category_ratios: Any, categories: Any
+) -> Dict[str, float]:
+    normalized_categories = set(normalize_arxiv_category_list(categories))
+    if not normalized_categories or not isinstance(category_ratios, dict):
+        return {}
+
+    normalized: Dict[str, float] = {}
+    for raw_category, raw_ratio in category_ratios.items():
+        category = normalize_arxiv_category(raw_category)
+        if category not in normalized_categories:
+            continue
+
+        try:
+            ratio = float(raw_ratio)
+        except (TypeError, ValueError):
+            continue
+
+        if ratio < 0:
+            ratio = 0.0
+        normalized[category] = ratio
+
+    return normalized
+
+
+def has_explicit_category_ratios(category_ratios: Any, categories: Any) -> bool:
+    return bool(normalize_arxiv_category_ratios(category_ratios, categories))
+
+
+def get_category_ratio_total(category_ratios: Any, categories: Any) -> float:
+    ratios = normalize_arxiv_category_ratios(category_ratios, categories)
+    normalized_categories = normalize_arxiv_category_list(categories)
+    return sum(ratios.get(category, 0.0) for category in normalized_categories)
+
+
+def validate_arxiv_category_ratios(
+    category_ratios: Any, categories: Any
+) -> Optional[str]:
+    ratios = normalize_arxiv_category_ratios(category_ratios, categories)
+    if not ratios:
+        return None
+
+    total = get_category_ratio_total(ratios, categories)
+    if total > DAILY_CATEGORY_RATIO_TOTAL + DAILY_CATEGORY_RATIO_TOLERANCE:
+        return (
+            f"arXiv category ratios add up to {total:g}%, "
+            "which exceeds 100%. Please redistribute the ratios."
+        )
+    if abs(total - DAILY_CATEGORY_RATIO_TOTAL) > DAILY_CATEGORY_RATIO_TOLERANCE:
+        return (
+            f"arXiv category ratios add up to {total:g}%. "
+            "Please adjust them to exactly 100%."
+        )
+    return None
+
+
+def get_arxiv_category_weight(category: str) -> float:
+    normalized_category = normalize_arxiv_category(category)
+    return ARXIV_CATEGORY_WEIGHT_OVERRIDES.get(
+        normalized_category, DEFAULT_CATEGORY_WEIGHT
+    )
+
+
+def _normalize_int_setting(
+    value: Any, default: int, min_value: int, max_value: int
+) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(min_value, min(max_value, parsed))
+
+
+def _calculate_quotas_from_ratios(
+    normalized_categories: List[str],
+    total_limit: int,
+    category_ratios: Dict[str, float],
+) -> Dict[str, int]:
+    ratio_items = [
+        (category, max(0.0, category_ratios.get(category, 0.0)), index)
+        for index, category in enumerate(normalized_categories)
+    ]
+    positive_ratio_items = [
+        (category, ratio, index)
+        for category, ratio, index in ratio_items
+        if ratio > DAILY_CATEGORY_RATIO_TOLERANCE
+    ]
+
+    quotas = {category: 0 for category in normalized_categories}
+    if not positive_ratio_items:
+        return quotas
+
+    if total_limit < len(positive_ratio_items):
+        ranked = sorted(positive_ratio_items, key=lambda item: (-item[1], item[2]))
+        for category, _ratio, _index in ranked[:total_limit]:
+            quotas[category] = 1
+        return quotas
+
+    raw_quotas = [
+        (category, total_limit * ratio / DAILY_CATEGORY_RATIO_TOTAL, ratio, index)
+        for category, ratio, index in positive_ratio_items
+    ]
+    quotas.update(
+        {
+            category: max(1, int(raw_quota))
+            for category, raw_quota, _ratio, _index in raw_quotas
+        }
+    )
+    assigned = sum(quotas.values())
+
+    if assigned < total_limit:
+        ranked_remainders = sorted(
+            raw_quotas,
+            key=lambda item: (-(item[1] - int(item[1])), -item[2], item[3]),
+        )
+        for category, _raw_quota, _ratio, _index in ranked_remainders:
+            if assigned >= total_limit:
+                break
+            quotas[category] += 1
+            assigned += 1
+
+    if assigned > total_limit:
+        ranked_for_reduction = sorted(
+            raw_quotas,
+            key=lambda item: ((item[1] - int(item[1])), item[2], -item[3]),
+        )
+        for category, _raw_quota, _ratio, _index in ranked_for_reduction:
+            while assigned > total_limit and quotas[category] > 1:
+                quotas[category] -= 1
+                assigned -= 1
+            if assigned <= total_limit:
+                break
+
+    return quotas
+
+
+def calculate_daily_category_quotas(
+    categories: Any, max_daily_papers: Any, category_ratios: Any = None
+) -> Dict[str, int]:
+    normalized_categories = normalize_arxiv_category_list(categories)
+    if not normalized_categories:
+        return {}
+
+    total_limit = _normalize_int_setting(
+        max_daily_papers,
+        DEFAULT_MAX_DAILY_PAPERS,
+        MIN_MAX_DAILY_PAPERS,
+        MAX_MAX_DAILY_PAPERS,
+    )
+
+    normalized_ratios = normalize_arxiv_category_ratios(
+        category_ratios, normalized_categories
+    )
+    ratio_error = validate_arxiv_category_ratios(
+        normalized_ratios, normalized_categories
+    )
+    if normalized_ratios and ratio_error is None:
+        return _calculate_quotas_from_ratios(
+            normalized_categories, total_limit, normalized_ratios
+        )
+
+    weighted_categories = [
+        (category, get_arxiv_category_weight(category), index)
+        for index, category in enumerate(normalized_categories)
+    ]
+
+    if total_limit < len(weighted_categories):
+        quotas = {category: 0 for category in normalized_categories}
+        ranked = sorted(weighted_categories, key=lambda item: (-item[1], item[2]))
+        for category, _weight, _index in ranked[:total_limit]:
+            quotas[category] = 1
+        return quotas
+
+    total_weight = sum(weight for _category, weight, _index in weighted_categories)
+    raw_quotas = [
+        (category, total_limit * weight / total_weight, weight, index)
+        for category, weight, index in weighted_categories
+    ]
+
+    quotas = {
+        category: max(1, int(raw_quota))
+        for category, raw_quota, _weight, _index in raw_quotas
+    }
+    assigned = sum(quotas.values())
+
+    if assigned < total_limit:
+        ranked_remainders = sorted(
+            raw_quotas,
+            key=lambda item: (-(item[1] - int(item[1])), -item[2], item[3]),
+        )
+        for category, _raw_quota, _weight, _index in ranked_remainders:
+            if assigned >= total_limit:
+                break
+            quotas[category] += 1
+            assigned += 1
+
+    if assigned > total_limit:
+        ranked_for_reduction = sorted(
+            raw_quotas,
+            key=lambda item: ((item[1] - int(item[1])), item[2], -item[3]),
+        )
+        for category, _raw_quota, _weight, _index in ranked_for_reduction:
+            while assigned > total_limit and quotas[category] > 1:
+                quotas[category] -= 1
+                assigned -= 1
+            if assigned <= total_limit:
+                break
+
+    return quotas
+
+
+def normalize_daily_arxiv_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(settings, dict):
+        return {}
+
+    normalized = dict(settings)
+    normalized["categories"] = normalize_arxiv_category_list(
+        normalized.get("categories", [])
+    )
+    normalized["categoryRatios"] = normalize_arxiv_category_ratios(
+        normalized.get("categoryRatios", {}), normalized["categories"]
+    )
+
+    keyword_list = normalized.get("keywordList", [])
+    if isinstance(keyword_list, list):
+        normalized["keywordList"] = [
+            kw.strip() for kw in keyword_list if isinstance(kw, str) and kw.strip()
+        ]
+
+    normalized["qualityConfig"] = normalize_quality_config(
+        normalized.get("qualityConfig", {})
+    )
+    normalized["maxDailyPapers"] = _normalize_int_setting(
+        normalized.get("maxDailyPapers"),
+        DEFAULT_MAX_DAILY_PAPERS,
+        MIN_MAX_DAILY_PAPERS,
+        MAX_MAX_DAILY_PAPERS,
+    )
+    normalized["maxNewPapersPerCategoryPerFetch"] = _normalize_int_setting(
+        normalized.get("maxNewPapersPerCategoryPerFetch"),
+        DEFAULT_MAX_NEW_PAPERS_PER_CATEGORY_PER_FETCH,
+        1,
+        MAX_MAX_DAILY_PAPERS,
+    )
+    normalized["categoryQuotas"] = calculate_daily_category_quotas(
+        normalized["categories"],
+        normalized["maxDailyPapers"],
+        normalized.get("categoryRatios", {}),
+    )
+
+    return normalized
+
+
 def build_daily_arxiv_summary_prompt(
     settings: Dict[str, Any], user_settings: Optional[Dict[str, Any]] = None
 ) -> str:
@@ -687,10 +997,10 @@ class DailyArxivManager:
             print(f"[DailyArxiv] Failed to save metadata: {e}")
 
     def get_settings(self) -> Dict:
-        """Get settings"""
+        """Get settings (normalized)"""
         try:
             with open(self.settings_file, "r", encoding="utf-8") as f:
-                return json.load(f)
+                return normalize_daily_arxiv_settings(json.load(f))
         except:
             return {}
 
@@ -955,6 +1265,47 @@ class DailyArxivManager:
             max_fetch = 500
             target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
 
+            # Load normalized settings early to compute daily/category quotas.
+            settings = self.get_settings()
+
+            # Daily budget / per-category quota (caps how many new papers we keep
+            # for the target date so the feed stays bounded).
+            max_daily_papers = settings.get("maxDailyPapers", DEFAULT_MAX_DAILY_PAPERS)
+            category_quotas = settings.get("categoryQuotas", {}) or {}
+            max_new_per_fetch = settings.get(
+                "maxNewPapersPerCategoryPerFetch",
+                DEFAULT_MAX_NEW_PAPERS_PER_CATEGORY_PER_FETCH,
+            )
+
+            existing_status = self._load_download_status(date_str, category)
+            category_existing_count = sum(
+                1 for v in existing_status.values() if v == "completed"
+            )
+            global_existing_count = 0
+            for cat in settings.get("categories", []):
+                cat_status = self._load_download_status(date_str, cat)
+                global_existing_count += sum(
+                    1 for v in cat_status.values() if v == "completed"
+                )
+
+            category_quota = category_quotas.get(category, max_daily_papers)
+            remaining_capacity = min(
+                max_daily_papers - global_existing_count,
+                category_quota - category_existing_count,
+                max_new_per_fetch,
+            )
+            if remaining_capacity <= 0:
+                progress.set_done("Daily/category quota already reached")
+                return []
+            candidate_collection_limit = min(
+                max_fetch,
+                max(
+                    remaining_capacity,
+                    remaining_capacity * 10,
+                    remaining_capacity + 20,
+                ),
+            )
+
             search = arxiv.Search(
                 query=f"cat:{category}",
                 max_results=max_fetch,
@@ -982,6 +1333,8 @@ class DailyArxivManager:
                 if paper_date and paper_date == target_date:
                     # is the target date paper, added to the results
                     all_results.append(result)
+                    if len(all_results) >= candidate_collection_limit:
+                        break
                     consecutive_older_count = 0  # Reset consecutive earlier date count
                 elif paper_date and paper_date < target_date:
                     # Papers older than target date found
@@ -1147,6 +1500,11 @@ Now the input abstract is:
 
             print(f"[DailyArxiv] Start processing {len(results)} papers...")
             for i, result in enumerate(results):
+                if len(papers) >= remaining_capacity:
+                    print(
+                        f"[DailyArxiv] Reached daily/category quota ({remaining_capacity}), stop processing"
+                    )
+                    break
                 try:
                     print(
                         f"[DailyArxiv] processing section {i+1}/{len(results)} papers..."
