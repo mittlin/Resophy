@@ -659,6 +659,52 @@
                 </div>
                 <div class="setting-card">
                     <div class="setting-card-header">
+                        <i class="fas fa-cogs"></i>
+                        <span>Quality strategy</span>
+                    </div>
+                    <div class="setting-card-body">
+                        <div class="setting-row">
+                            <div class="setting-info">
+                                <label for="daily-arxiv-quality-strategy">Strategy</label>
+                                <small>Controls institution-tier filtering strictness</small>
+                            </div>
+                            <select id="daily-arxiv-quality-strategy" class="setting-input">
+                                <option value="strict">Strict</option>
+                                <option value="balanced">Balanced</option>
+                                <option value="discovery">Discovery</option>
+                            </select>
+                        </div>
+                        <div id="daily-arxiv-quality-strategy-desc" class="setting-hint"></div>
+                        <div class="setting-row">
+                            <div class="setting-info">
+                                <label for="daily-arxiv-min-tier">Minimum institution tier</label>
+                                <small>Papers below this tier are filtered out for the selected strategy</small>
+                            </div>
+                            <select id="daily-arxiv-min-tier" class="setting-input">
+                                <option value="S">S</option>
+                                <option value="A">A</option>
+                                <option value="B">B</option>
+                                <option value="C">C</option>
+                            </select>
+                        </div>
+                        <div class="setting-row">
+                            <label class="switch-label">
+                                <input type="checkbox" id="daily-arxiv-allow-unknown" />
+                                <span>Allow unknown institutions</span>
+                            </label>
+                            <small>When off, papers with no recognized institution are filtered out</small>
+                        </div>
+                        <div class="setting-row full-width">
+                            <div class="setting-info">
+                                <label>Institution tiers</label>
+                                <small>Edit the institution list per tier. One institution per line.</small>
+                            </div>
+                            <div class="institution-tier-editor" id="daily-arxiv-tier-editor"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="setting-card">
+                    <div class="setting-card-header">
                         <i class="fas fa-university"></i>
                         <span>Additional institution configuration</span>
                     </div>

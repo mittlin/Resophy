@@ -954,6 +954,58 @@ body {
     color: #9ca3af;
 }
 
+.setting-hint {
+    margin: 4px 0 8px;
+    padding: 8px 12px;
+    background: #f3f4f6;
+    border-left: 3px solid #667eea;
+    border-radius: 4px;
+    font-size: 12.5px;
+    color: #4b5563;
+    line-height: 1.5;
+}
+
+.institution-tier-editor {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+    width: 100%;
+    margin-top: 8px;
+}
+
+.tier-editor-block {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.tier-editor-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: #374151;
+}
+
+.daily-arxiv-tier-textarea {
+    min-height: 90px;
+    font-size: 13px;
+}
+
+.switch-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    color: #1f2937;
+    cursor: pointer;
+}
+
+.switch-label input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+}
+
 .setting-card-footer {
     padding: 16px 20px;
     background: #f9fafb;

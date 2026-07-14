@@ -10141,6 +10141,7 @@ async function loadDailyArxivSettings() {
             renderDailyArxivCategoryTags();
             renderDailyArxivSettingsCategoryList();
             renderDailyArxivKeywordList();
+            renderDailyArxivQualitySettings();
         }
         
         // Load list of known institutions
@@ -10369,6 +10370,96 @@ function setupDailyArxivKeywordInput() {
             addDailyArxivKeyword();
         }
     });
+}
+
+// ========================================
+// Daily arXiv Quality Strategy Settings (D)
+// ========================================
+function renderDailyArxivQualitySettings() {
+    const qc = dailyArxivSettings.qualityConfig;
+    const strategySel = document.getElementById('daily-arxiv-quality-strategy');
+    const minTierSel = document.getElementById('daily-arxiv-min-tier');
+    const allowUnknown = document.getElementById('daily-arxiv-allow-unknown');
+    const descEl = document.getElementById('daily-arxiv-quality-strategy-desc');
+    if (!strategySel || !qc || !qc.strategies) return;
+
+    const strategy = qc.strategy || 'balanced';
+    strategySel.value = strategy;
+
+    const stratCfg = qc.strategies[strategy] || {};
+    if (minTierSel) minTierSel.value = stratCfg.minInstitutionTier || 'B';
+    if (allowUnknown) allowUnknown.checked = stratCfg.allowUnknownInstitutions !== false;
+    if (descEl) {
+        descEl.textContent = `${stratCfg.summary || ''} ${stratCfg.description || ''}`.trim();
+    }
+
+    renderDailyArxivTierEditor(qc.institutionTiers || {});
+
+    if (!strategySel.dataset.bound) {
+        strategySel.addEventListener('change', onQualityStrategyChange);
+        if (minTierSel) minTierSel.addEventListener('change', onQualityFieldChange);
+        if (allowUnknown) allowUnknown.addEventListener('change', onQualityFieldChange);
+        const editor = document.getElementById('daily-arxiv-tier-editor');
+        if (editor) editor.addEventListener('change', onTierEditorChange);
+        strategySel.dataset.bound = '1';
+    }
+}
+
+function onQualityStrategyChange() {
+    const qc = dailyArxivSettings.qualityConfig;
+    const strategySel = document.getElementById('daily-arxiv-quality-strategy');
+    if (!qc || !strategySel) return;
+    const strategy = strategySel.value;
+    qc.strategy = strategy;
+    const stratCfg = qc.strategies[strategy] || {};
+    const minTierSel = document.getElementById('daily-arxiv-min-tier');
+    const allowUnknown = document.getElementById('daily-arxiv-allow-unknown');
+    const descEl = document.getElementById('daily-arxiv-quality-strategy-desc');
+    if (minTierSel) minTierSel.value = stratCfg.minInstitutionTier || 'B';
+    if (allowUnknown) allowUnknown.checked = stratCfg.allowUnknownInstitutions !== false;
+    if (descEl) {
+        descEl.textContent = `${stratCfg.summary || ''} ${stratCfg.description || ''}`.trim();
+    }
+    autoSaveDailyArxivSettings();
+}
+
+function onQualityFieldChange() {
+    const qc = dailyArxivSettings.qualityConfig;
+    const strategySel = document.getElementById('daily-arxiv-quality-strategy');
+    if (!qc || !strategySel) return;
+    const strategy = strategySel.value;
+    const stratCfg = qc.strategies[strategy] || (qc.strategies[strategy] = {});
+    const minTierSel = document.getElementById('daily-arxiv-min-tier');
+    const allowUnknown = document.getElementById('daily-arxiv-allow-unknown');
+    if (minTierSel) stratCfg.minInstitutionTier = minTierSel.value;
+    if (allowUnknown) stratCfg.allowUnknownInstitutions = allowUnknown.checked;
+    autoSaveDailyArxivSettings();
+}
+
+function renderDailyArxivTierEditor(tiers) {
+    const container = document.getElementById('daily-arxiv-tier-editor');
+    if (!container) return;
+    const tierOrder = ['S', 'A', 'B', 'C'];
+    container.innerHTML = tierOrder.map(tier => {
+        const items = (tiers[tier] || []).join('\n');
+        return `
+        <div class="tier-editor-block">
+            <label class="tier-editor-label">Tier ${tier}</label>
+            <textarea class="setting-textarea daily-arxiv-tier-textarea" data-tier="${tier}" rows="4" placeholder="One institution per line">${escapeHtml(items)}</textarea>
+        </div>`;
+    }).join('');
+}
+
+function onTierEditorChange() {
+    const qc = dailyArxivSettings.qualityConfig;
+    if (!qc) return;
+    if (!qc.institutionTiers) qc.institutionTiers = {};
+    document.querySelectorAll('.daily-arxiv-tier-textarea').forEach(ta => {
+        const tier = ta.dataset.tier;
+        const lines = ta.value.split('\n').map(s => s.trim()).filter(Boolean);
+        qc.institutionTiers[tier] = lines;
+    });
+    autoSaveDailyArxivSettings();
 }
 
 // rendering Daily arXiv Interface partition label
