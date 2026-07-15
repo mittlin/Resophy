@@ -4336,6 +4336,7 @@ mark { background: #fff59d; }
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
     transition: all 0.2s ease;
     cursor: pointer;
+    position: relative;
     display: flex;
     flex-direction: column;
     width: 100%; /* fill upgridcell */
@@ -4354,6 +4355,26 @@ mark { background: #fff59d; }
 
 .daily-arxiv-card-read:hover {
     opacity: 0.85;
+}
+
+.daily-arxiv-card-read::after {
+    content: '已读';
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    padding: 8px 20px;
+    border: 4px dashed rgba(185, 28, 28, 0.85);
+    color: rgba(185, 28, 28, 0.9);
+    background: rgba(255, 255, 255, 0.85);
+    border-radius: 16px;
+    font-size: 24px;
+    font-weight: 800;
+    letter-spacing: 4px;
+    transform: rotate(-9deg);
+    z-index: 6;
+    pointer-events: none;
+    text-shadow: 0 2px 0 rgba(255, 255, 255, 0.8);
+    box-shadow: 0 4px 16px rgba(15, 23, 42, 0.12);
 }
 
 .daily-arxiv-card-thumbnail {

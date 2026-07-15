@@ -11663,7 +11663,7 @@ function renderDailyArxivGrid() {
                             <button class="daily-arxiv-card-action" onclick="event.stopPropagation(); window.open('https://arxiv.org/abs/${paper.arxiv_id}', '_blank')" title="exist arXiv Check">
                                 <i class="fas fa-external-link-alt"></i>
                             </button>
-                            <button class="daily-arxiv-card-action" onclick="event.stopPropagation(); onDailyArxivToggleRead(${index}, event)" title="${dailyArxivReadStatus[paper.arxiv_id] ? 'Mark as unread' : 'Mark as read'}">
+                            <button class="daily-arxiv-card-action" onclick="event.stopPropagation(); onDailyArxivToggleRead('${paper.arxiv_id}', event)" title="${dailyArxivReadStatus[paper.arxiv_id] ? 'Mark as unread' : 'Mark as read'}">
                                 <i class="fas ${dailyArxivReadStatus[paper.arxiv_id] ? 'fa-envelope-open' : 'fa-envelope'}"></i>
                             </button>
                             <button class="daily-arxiv-card-action" onclick="event.stopPropagation(); onDailyArxivResync(${index}, event)" title="Re-sync (re-extract affiliations & summary)">
@@ -11737,13 +11737,10 @@ async function onDailyArxivResync(index, event) {
 }
 
 // Toggle the read/unread status of a Daily arXiv paper
-async function onDailyArxivToggleRead(index, event) {
-    event.stopPropagation();
-    const papers = getCurrentDailyArxivPapers();
-    const paper = papers[index];
-    if (!paper || !paper.arxiv_id) return;
+async function onDailyArxivToggleRead(arxivId, event) {
+    if (event) event.stopPropagation();
+    if (!arxivId) return;
 
-    const arxivId = paper.arxiv_id;
     const newRead = !dailyArxivReadStatus[arxivId];
 
     // Optimistic update + re-render
@@ -12306,6 +12303,16 @@ function showDailyArxivDetail(index) {
     const papers = getCurrentDailyArxivPapers();
     const paper = papers[index];
     if (!paper) return;
+
+    // Mark as read when opening the detail (PaperPilot-style implicit read)
+    if (paper.arxiv_id) {
+        dailyArxivReadStatus[paper.arxiv_id] = true;
+        fetch('/api/daily-arxiv/read/mark', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ arxiv_id: paper.arxiv_id, read: true })
+        }).catch(() => {});
+    }
     
     // use announced date（Announcement date）
     const announcedDate = paper.announced 
@@ -12461,6 +12468,7 @@ function closeDailyArxivDetail() {
     if (modal) {
         modal.remove();
     }
+    renderDailyArxivGrid();
 }
 
 // Extract paper institution information
