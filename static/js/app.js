@@ -10694,23 +10694,9 @@ async function triggerFetchPapers(force = false) {
     if (dailyArxivLLMConfigured) {
         const testResult = await testLLMAPIForDailyArxiv();
         if (!testResult.success) {
-            const actionButton = `
-                <button class="notification-action-btn" onclick="restartDailyArxivFetch()" style="
-                    background: #c62828;
-                    color: white;
-                    border: none;
-                    border-radius: 4px;
-                    padding: 4px 12px;
-                    font-size: 12px;
-                    cursor: pointer;
-                    margin-left: 8px;
-                    transition: background 0.2s;
-                " onmouseover="this.style.background='#a02020'" onmouseout="this.style.background='#c62828'" title="Retest and start crawling">
-                    <i class="fas fa-redo"></i> Restart crawling
-                </button>
-            `;
-            showRoundedNotification('LLM API Call failed, stop Daily arXiv,Check, please LLM API set up.', 'error', true, 'daily-arxiv-api-notification', actionButton);
-            return;
+            if (!confirm(`LLM API 调用失败（${testResult.error || '未知错误'}），是否仍然拉取？将仅下载 PDF 与缩略图，不生成摘要/关键词/机构信息。`)) {
+                return;
+            }
         }
     }
     
@@ -10759,23 +10745,9 @@ async function triggerFetchAllCategories(force = false, dateStr = null) {
     if (dailyArxivLLMConfigured) {
         const testResult = await testLLMAPIForDailyArxiv();
         if (!testResult.success) {
-            const actionButton = `
-                <button class="notification-action-btn" onclick="restartDailyArxivFetch()" style="
-                    background: #c62828;
-                    color: white;
-                    border: none;
-                    border-radius: 4px;
-                    padding: 4px 12px;
-                    font-size: 12px;
-                    cursor: pointer;
-                    margin-left: 8px;
-                    transition: background 0.2s;
-                " onmouseover="this.style.background='#a02020'" onmouseout="this.style.background='#c62828'" title="Retest and start crawling">
-                    <i class="fas fa-redo"></i> Restart crawling
-                </button>
-            `;
-            showRoundedNotification('LLM API Call failed, stop Daily arXiv,Check, please LLM API set up.', 'error', true, 'daily-arxiv-api-notification', actionButton);
-            return;
+            if (!confirm(`LLM API 调用失败（${testResult.error || '未知错误'}），是否仍然拉取？将仅下载 PDF 与缩略图，不生成摘要/关键词/机构信息。`)) {
+                return;
+            }
         }
     }
     
