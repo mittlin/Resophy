@@ -602,18 +602,6 @@ def register_daily_arxiv_routes(
     def api_fetch_daily_arxiv():
         """Manually trigger the crawling of papers (automatically crawl all papers on a specified date)"""
         try:
-            # examine LLM Configuration
-            if not is_llm_configured():
-                return (
-                    jsonify(
-                        {
-                            "success": False,
-                            "error": "Please configure it in settings first LLM API（Model、Base URL、API Key）",
-                        }
-                    ),
-                    400,
-                )
-
             data = request.json or {}
             category = data.get("category")
             date_str = data.get("date", get_today_arxiv_date())
@@ -677,18 +665,6 @@ def register_daily_arxiv_routes(
     def api_fetch_all_categories():
         """Crawl all configured partitions (automatically crawl all papers today)"""
         try:
-            # examine LLM Configuration
-            if not is_llm_configured():
-                return (
-                    jsonify(
-                        {
-                            "success": False,
-                            "error": "Please configure it in settings first LLM API（Model、Base URL、API Key）",
-                        }
-                    ),
-                    400,
-                )
-
             data = request.json or {}
             force = data.get("force", False)
             date_str = data.get(
@@ -1181,17 +1157,6 @@ def register_daily_arxiv_routes(
     def api_start_scheduler():
         """Manually start the scheduler"""
         try:
-            if not is_llm_configured():
-                return (
-                    jsonify(
-                        {
-                            "success": False,
-                            "error": "LLM The configuration is incomplete, please configure it in the settings first LLM API（Model、Base URL、API Key）",
-                        }
-                    ),
-                    400,
-                )
-
             if manager._scheduler_running:
                 return jsonify(
                     {
