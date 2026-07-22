@@ -117,52 +117,18 @@ def register_daily_arxiv_routes(
     def api_check_llm_config():
         """examine LLM Is the configuration complete?"""
         try:
-            llm_config = get_llm_config()
             is_configured = is_llm_configured()
 
-            # If the configuration is complete, retest LLM API, instead of returning the historical status directly
-            # This can avoid the problem of historical failure status still being displayed after the configuration is repaired in the settings.
-            llm_api_failed = False
-            llm_api_error_message = ""
-
-            if is_configured:
-                # Configuration is complete, retest LLM API
-                from resophy.tools.api_test_utils import test_llm_api
-
-                llm_model = llm_config.get("llmModel", "").strip()
-                llm_base_url = llm_config.get("llmBaseUrl", "").strip()
-                llm_api_key = llm_config.get("llmApiKey", "").strip()
-
-                if llm_model and llm_base_url and llm_api_key:
-                    try:
-                        success, error_msg = test_llm_api(
-                            llm_model, llm_base_url, llm_api_key
-                        )
-                        if not success:
-                            # Test failed, update manager state
-                            manager._llm_api_failed = True
-                            manager._llm_api_error_message = error_msg
-                            llm_api_failed = True
-                            llm_api_error_message = error_msg
-                        else:
-                            # Test successful, clear failure status
-                            manager._llm_api_failed = False
-                            manager._llm_api_error_message = ""
-                            llm_api_failed = False
-                            llm_api_error_message = ""
-                    except Exception as e:
-                        # Test exception, update status
-                        manager._llm_api_failed = True
-                        manager._llm_api_error_message = str(e)
-                        llm_api_failed = True
-                        llm_api_error_message = str(e)
-            else:
-                # Configuration is incomplete, check historical status (but do not show errors because the configuration itself is incomplete)
-                if hasattr(manager, "_llm_api_failed"):
-                    # Even if there is a historical failure status, if the configuration is incomplete, no error will be displayed
-                    # Because the user may be configuring
-                    llm_api_failed = False
-                    llm_api_error_message = ""
+            # Return cached LLM test state instead of retesting every call.
+            # The manager state is updated in real time by:
+            #   - Settings save callback (settings_route.py)
+            #   - Scheduler loop (_do_scheduled_fetch)
+            #   - Fetch API endpoints
+            llm_api_failed = getattr(manager, '_llm_api_failed', False)
+            llm_api_error_message = getattr(manager, '_llm_api_error_message', '')
+            if not is_configured:
+                llm_api_failed = False
+                llm_api_error_message = ""
 
             return jsonify(
                 {
