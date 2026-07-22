@@ -9276,6 +9276,7 @@ let dailyArxivSettings = {
 let dailyArxivProgressIntervals = {};  // Progress polling timer for each partition: {category: intervalId}
 let dailyArxivSearchQuery = '';        // Daily arXiv Page search query
 let dailyArxivLLMConfigured = false;  // LLM configuration status
+let dailyArxivLLMFailed = false;  // LLM API has failed
 let dailyArxivReadStatus = {};       // Read-status map: {arxiv_id: bool}
 let dailyArxivSlowDownloadNotified = {};  // Log whether each partition has shown a slow download prompt: {category: true}
 let dailyArxivLastPaperKey = '';  // Keep track of the previous paperkey, used to detect paper switching
@@ -9666,6 +9667,7 @@ async function checkDailyArxivLLMConfig() {
                 dailyArxivLLMConfigured = data.is_configured;
                 
                 // examine LLM API whether failed
+                dailyArxivLLMFailed = data.llm_api_failed;
                 if (data.llm_api_failed) {
                     // Display a permanent pop-up window with a restart button
                     const actionButton = `
@@ -10748,12 +10750,19 @@ async function triggerFetchPapers(force = false) {
 
     // Test before crawling LLM API (only when LLM is configured)
     if (dailyArxivLLMConfigured) {
-        const testResult = await testLLMAPIForDailyArxiv();
-        if (!testResult.success) {
-            if (!confirm(`LLM API 调用失败（${testResult.error || '未知错误'}），是否仍然拉取？将仅下载 PDF 与缩略图，不生成摘要/关键词/机构信息。`)) {
+        if (dailyArxivLLMFailed) {
+            if (!confirm('LLM API 调用失败，是否仍然拉取？将仅下载 PDF 与缩略图，不生成摘要/关键词/机构信息。')) {
                 return;
             }
+        } else {
+            const testResult = await testLLMAPIForDailyArxiv();
+            if (!testResult.success) {
+                if (!confirm(`LLM API 调用失败（${testResult.error || '未知错误'}），是否仍然拉取？将仅下载 PDF 与缩略图，不生成摘要/关键词/机构信息。`)) {
+                    return;
+                }
+            }
         }
+        removeNotificationWithAnimation('daily-arxiv-api-notification');
     }
     
     try {
@@ -10799,12 +10808,19 @@ async function triggerFetchAllCategories(force = false, dateStr = null) {
 
     // Test before crawling LLM API (only when LLM is configured)
     if (dailyArxivLLMConfigured) {
-        const testResult = await testLLMAPIForDailyArxiv();
-        if (!testResult.success) {
-            if (!confirm(`LLM API 调用失败（${testResult.error || '未知错误'}），是否仍然拉取？将仅下载 PDF 与缩略图，不生成摘要/关键词/机构信息。`)) {
+        if (dailyArxivLLMFailed) {
+            if (!confirm('LLM API 调用失败，是否仍然拉取？将仅下载 PDF 与缩略图，不生成摘要/关键词/机构信息。')) {
                 return;
             }
+        } else {
+            const testResult = await testLLMAPIForDailyArxiv();
+            if (!testResult.success) {
+                if (!confirm(`LLM API 调用失败（${testResult.error || '未知错误'}），是否仍然拉取？将仅下载 PDF 与缩略图，不生成摘要/关键词/机构信息。`)) {
+                    return;
+                }
+            }
         }
+        removeNotificationWithAnimation('daily-arxiv-api-notification');
     }
     
     try {
