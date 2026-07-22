@@ -2390,40 +2390,33 @@ Now the input abstract is:
 
         if not llm_model or not llm_base_url or not llm_api_key:
             print(
-                "[DailyArxiv] LLM API Not configured, skip this crawl. Please configure in settings LLM API Try again later."
+                "[DailyArxiv] LLM API not configured, proceeding with degraded mode (no summary/affiliations)."
             )
-            return
+        else:
+            try:
+                from resophy.tools.api_test_utils import test_llm_api
 
-        # test LLM API Is it available
-        try:
-            from resophy.tools.api_test_utils import test_llm_api
+                print("[DailyArxiv] Testing LLM API connect...")
+                success, error_msg = test_llm_api(llm_model, llm_base_url, llm_api_key)
 
-            print("[DailyArxiv] Testing LLM API connect...")
-            success, error_msg = test_llm_api(llm_model, llm_base_url, llm_api_key)
-
-            if not success:
-                # Update status and record failure information
+                if not success:
+                    self._llm_api_failed = True
+                    self._llm_api_error_message = error_msg
+                    print(
+                        f"[DailyArxiv] LLM API test failed: {error_msg}, proceeding with degraded mode."
+                    )
+                else:
+                    self._llm_api_failed = False
+                    self._llm_api_error_message = ""
+                    print(
+                        "[DailyArxiv] LLM API test successful, fetching with full features."
+                    )
+            except Exception as e:
                 self._llm_api_failed = True
-                self._llm_api_error_message = error_msg
+                self._llm_api_error_message = str(e)
                 print(
-                    f"[DailyArxiv] LLM API test failed: {error_msg}, skip this crawl. Wait for the next inspection cycle."
+                    f"[DailyArxiv] LLM API test exception: {e}, proceeding with degraded mode."
                 )
-                return
-
-            # Test successful, clear failure status
-            self._llm_api_failed = False
-            self._llm_api_error_message = ""
-            print(
-                "[DailyArxiv] LLM API The test is successful, start fetching papers..."
-            )
-        except Exception as e:
-            # Update status and record exception information
-            self._llm_api_failed = True
-            self._llm_api_error_message = str(e)
-            print(
-                f"[DailyArxiv] LLM API Test exception: {e}, skip this crawl. Wait for the next inspection cycle."
-            )
-            return
 
         print(f"[DailyArxiv] Start scheduled crawling: {categories}")
 
