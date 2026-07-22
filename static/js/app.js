@@ -9595,7 +9595,7 @@ async function restartDailyArxivFetch() {
     if (!testResult.success) {
         // The test fails and the error message is redisplayed.（With refresh effect）
         const actionButton = `
-            <span class="notification-actions">
+            <span class="notification-actions" style="display:inline-flex;gap:8px;align-items:center;">
             <button class="notification-action-btn" onclick="restartDailyArxivFetch()" style="
                 background: #c62828;
                 color: white;
@@ -9604,12 +9604,11 @@ async function restartDailyArxivFetch() {
                 padding: 4px 12px;
                 font-size: 12px;
                 cursor: pointer;
-                margin-left: 8px;
                 transition: background 0.2s;
             " onmouseover="this.style.background='#a02020'" onmouseout="this.style.background='#c62828'" title="Retest and start crawling">
                 <i class="fas fa-redo"></i> Restart
             </button>
-            <button class="notification-action-btn" onclick="triggerFetchPapers(false)" style="
+            <button class="notification-action-btn" onclick="removeNotificationWithAnimation();triggerFetchPapers(false)" style="
                 background: #1565c0;
                 color: white;
                 border: none;
@@ -9617,12 +9616,11 @@ async function restartDailyArxivFetch() {
                 padding: 4px 12px;
                 font-size: 12px;
                 cursor: pointer;
-                margin-left: 4px;
                 transition: background 0.2s;
             " onmouseover="this.style.background='#0d47a1'" onmouseout="this.style.background='#1565c0'" title="Fetch current category">
                 <i class="fas fa-sync"></i> Fetch
             </button>
-            <button class="notification-action-btn" onclick="triggerFetchAllCategories(false)" style="
+            <button class="notification-action-btn" onclick="removeNotificationWithAnimation();triggerFetchAllCategories(false)" style="
                 background: #1565c0;
                 color: white;
                 border: none;
@@ -9630,7 +9628,6 @@ async function restartDailyArxivFetch() {
                 padding: 4px 12px;
                 font-size: 12px;
                 cursor: pointer;
-                margin-left: 4px;
                 transition: background 0.2s;
             " onmouseover="this.style.background='#0d47a1'" onmouseout="this.style.background='#1565c0'" title="Fetch all categories">
                 <i class="fas fa-sync-alt"></i> Fetch All
@@ -9643,18 +9640,7 @@ async function restartDailyArxivFetch() {
     
     // Test passed, update configuration status
     dailyArxivLLMConfigured = true;
-    
-    // Use the currently viewed date（If not, use today's date）
-    const dateToFetch = dailyArxivCurrentDate || new Date().toISOString().split('T')[0];
-    
-    // Start crawling（Decide whether to crawl a single partition or all partitions based on the current view）
-    if (dailyArxivCurrentCategory && dailyArxivCurrentCategory !== 'all') {
-        // Grab the current partition
-        await triggerFetchPapers(false);
-    } else {
-        // Fetch all partitions（Use the currently viewed date）
-        await triggerFetchAllCategories(false, dateToFetch);
-    }
+    dailyArxivLLMFailed = false;
 }
 
 // examine Daily arXiv LLM Configuration
@@ -9671,7 +9657,7 @@ async function checkDailyArxivLLMConfig() {
                 if (data.llm_api_failed) {
                     // Display a permanent pop-up window with a restart button
                     const actionButton = `
-                        <span class="notification-actions">
+                        <span class="notification-actions" style="display:inline-flex;gap:8px;align-items:center;">
                         <button class="notification-action-btn" onclick="restartDailyArxivFetch()" style="
                             background: #c62828;
                             color: white;
@@ -9680,12 +9666,11 @@ async function checkDailyArxivLLMConfig() {
                             padding: 4px 12px;
                             font-size: 12px;
                             cursor: pointer;
-                            margin-left: 8px;
                             transition: background 0.2s;
                         " onmouseover="this.style.background='#a02020'" onmouseout="this.style.background='#c62828'" title="Retest and start crawling">
                             <i class="fas fa-redo"></i> Restart
                         </button>
-                        <button class="notification-action-btn" onclick="triggerFetchPapers(false)" style="
+                        <button class="notification-action-btn" onclick="removeNotificationWithAnimation();triggerFetchPapers(false)" style="
                             background: #1565c0;
                             color: white;
                             border: none;
@@ -9693,12 +9678,11 @@ async function checkDailyArxivLLMConfig() {
                             padding: 4px 12px;
                             font-size: 12px;
                             cursor: pointer;
-                            margin-left: 4px;
                             transition: background 0.2s;
                         " onmouseover="this.style.background='#0d47a1'" onmouseout="this.style.background='#1565c0'" title="Fetch current category">
                             <i class="fas fa-sync"></i> Fetch
                         </button>
-                        <button class="notification-action-btn" onclick="triggerFetchAllCategories(false)" style="
+                        <button class="notification-action-btn" onclick="removeNotificationWithAnimation();triggerFetchAllCategories(false)" style="
                             background: #1565c0;
                             color: white;
                             border: none;
@@ -9706,7 +9690,6 @@ async function checkDailyArxivLLMConfig() {
                             padding: 4px 12px;
                             font-size: 12px;
                             cursor: pointer;
-                            margin-left: 4px;
                             transition: background 0.2s;
                         " onmouseover="this.style.background='#0d47a1'" onmouseout="this.style.background='#1565c0'" title="Fetch all categories">
                             <i class="fas fa-sync-alt"></i> Fetch All
