@@ -363,8 +363,8 @@ def register_daily_arxiv_routes(
                             f"{p.get('arxiv_id')}: {err}"
                         )
 
-                # Step 2: Extract affiliations if missing
-                if not p.get("affiliations_extracted"):
+                # Step 2: Extract affiliations if missing or empty
+                if not p.get("affiliations_extracted") or not p.get("affiliations"):
                     if _extract_affiliations_for(p, cat):
                         affs_extracted += 1
                         # Step 3: Quality filter
