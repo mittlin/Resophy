@@ -9690,6 +9690,11 @@ async function initDailyArxiv() {
     if (batchSummaryBtn) {
         batchSummaryBtn.addEventListener('click', onDailyArxivBatchSummary);
     }
+
+    const qualityFilteredBtn = document.getElementById('daily-arxiv-quality-filtered');
+    if (qualityFilteredBtn) {
+        qualityFilteredBtn.addEventListener('click', onShowQualityFiltered);
+    }
     
     // date navigation buttons
     const prevDateBtn = document.getElementById('daily-arxiv-prev-date');
@@ -11806,8 +11811,13 @@ async function onDailyArxivBatchSummary() {
             if (data.generated) parts.push(`${data.generated} generated`);
             if (data.skipped) parts.push(`${data.skipped} skipped`);
             if (data.failed) parts.push(`${data.failed} failed`);
+            if (data.affiliations_extracted) parts.push(`${data.affiliations_extracted} affs`);
+            if (data.affiliations_failed) parts.push(`${data.affiliations_failed} aff-fail`);
             showMessage('Batch summary: ' + (parts.join(', ') || 'done'), 'success', 4000);
-            // Refresh the grid so newly generated summaries show up
+            if (data.quality_filtered > 0) {
+                showQualityFilteredButton(data.quality_filtered);
+                showMessage(`${data.quality_filtered} papers filtered by quality, click 'Filtered' to review`, 'warning', 8000);
+            }
             await loadPapersForCurrentDate();
         } else {
             showMessage(data.error || 'Batch summary failed', 'error');
@@ -11819,6 +11829,92 @@ async function onDailyArxivBatchSummary() {
             btn.disabled = false;
             btn.innerHTML = '<i class="fas fa-magic"></i> Batch summary';
         }
+    }
+}
+
+function showQualityFilteredButton(count) {
+    const btn = document.getElementById('daily-arxiv-quality-filtered');
+    const badge = document.getElementById('daily-arxiv-filtered-count');
+    if (btn) btn.style.display = '';
+    if (badge) badge.textContent = count;
+}
+
+function closeQualityFilteredModal() {
+    const modal = document.getElementById('quality-filtered-modal');
+    if (modal) modal.style.display = 'none';
+}
+
+async function onShowQualityFiltered() {
+    try {
+        const res = await fetch('/api/daily-arxiv/quality-filtered');
+        const data = await res.json();
+        if (!data.success) {
+            showMessage(data.error || 'Failed to load filtered papers', 'error');
+            return;
+        }
+        const papers = data.papers || [];
+        const body = document.getElementById('quality-filtered-modal-body');
+        if (papers.length === 0) {
+            body.innerHTML = '<p>No quality-filtered papers.</p>';
+            document.getElementById('quality-filtered-modal').style.display = 'block';
+            return;
+        }
+        let html = '<table style="width:100%;border-collapse:collapse;">';
+        html += '<tr style="border-bottom:1px solid #ddd;">';
+        html += '<th style="padding:8px;text-align:left;width:30px;"><input type="checkbox" id="qf-select-all" onchange="document.querySelectorAll(\'.qf-checkbox\').forEach(c=>c.checked=this.checked)"></th>';
+        html += '<th style="padding:8px;text-align:left;">Title</th>';
+        html += '<th style="padding:8px;text-align:left;">Affiliations</th>';
+        html += '<th style="padding:8px;text-align:left;">Category</th>';
+        html += '<th style="padding:8px;text-align:left;">Reason</th>';
+        html += '</tr>';
+        for (const p of papers) {
+            html += `<tr style="border-bottom:1px solid #eee;">`;
+            html += `<td style="padding:8px;"><input type="checkbox" class="qf-checkbox" data-id="${p.arxiv_id}"></td>`;
+            html += `<td style="padding:8px;">${p.title || 'N/A'}</td>`;
+            html += `<td style="padding:8px;">${(p.affiliations || []).join(', ') || 'N/A'}</td>`;
+            html += `<td style="padding:8px;">${p.category || ''}</td>`;
+            html += `<td style="padding:8px;">${p.reason || ''}</td>`;
+            html += '</tr>';
+        }
+        html += '</table>';
+        body.innerHTML = html;
+        document.getElementById('quality-filtered-modal').style.display = 'block';
+    } catch (err) {
+        showMessage('Failed to load filtered papers: ' + err, 'error');
+    }
+}
+
+async function onCleanupQualityFiltered(mode) {
+    let arxiv_ids = [];
+    if (mode === 'selected') {
+        const checked = document.querySelectorAll('.qf-checkbox:checked');
+        if (checked.length === 0) {
+            showMessage('No papers selected', 'warning');
+            return;
+        }
+        checked.forEach(c => arxiv_ids.push(c.getAttribute('data-id')));
+    }
+    try {
+        const body = mode === 'all' ? JSON.stringify({ all: true }) : JSON.stringify({ arxiv_ids });
+        const res = await fetch('/api/daily-arxiv/quality-filtered/cleanup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body
+        });
+        const data = await res.json();
+        if (data.success) {
+            showMessage(`Removed ${data.removed} papers, ${data.remaining} remaining`, 'success', 4000);
+            closeQualityFilteredModal();
+            if (data.remaining === 0) {
+                const btn = document.getElementById('daily-arxiv-quality-filtered');
+                if (btn) btn.style.display = 'none';
+            }
+            await loadPapersForCurrentDate();
+        } else {
+            showMessage(data.error || 'Cleanup failed', 'error');
+        }
+    } catch (err) {
+        showMessage('Cleanup failed: ' + err, 'error');
     }
 }
 

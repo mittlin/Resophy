@@ -192,6 +192,9 @@
                 <button class="btn btn-outline" id="daily-arxiv-batch-summary" title="Generate summaries for all papers missing one">
                     <i class="fas fa-magic"></i> Batch summary
                 </button>
+                <button class="btn btn-outline" id="daily-arxiv-quality-filtered" title="View quality-filtered papers" style="display:none;">
+                    <i class="fas fa-shield-alt"></i> Filtered <span class="badge" id="daily-arxiv-filtered-count">0</span>
+                </button>
                 <button class="btn btn-secondary" id="daily-arxiv-settings" title="Configure arXiv categories">
                     <i class="fas fa-cog"></i> Settings
                 </button>
@@ -1379,6 +1382,34 @@
     })();
     </script>
     
+    <div id="quality-filtered-modal" class="institution-modal" style="display: none;">
+        <div class="institution-modal-overlay" onclick="closeQualityFilteredModal()"></div>
+        <div class="institution-modal-container" style="max-width: 800px;">
+            <div class="institution-modal-header">
+                <div class="institution-modal-title-group">
+                    <i class="fas fa-shield-alt"></i>
+                    <h3 id="quality-filtered-modal-title">Quality Filtered Papers</h3>
+                </div>
+                <button class="institution-modal-close" onclick="closeQualityFilteredModal()">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="institution-modal-body" id="quality-filtered-modal-body">
+                <p>Loading...</p>
+            </div>
+            <div class="institution-modal-footer">
+                <div class="institution-modal-actions">
+                    <button class="institution-btn institution-btn-cancel" onclick="closeQualityFilteredModal()">Close</button>
+                    <button class="institution-btn institution-btn-danger" onclick="onCleanupQualityFiltered('all')">
+                        <i class="fas fa-trash-alt"></i> Delete all
+                    </button>
+                    <button class="institution-btn institution-btn-primary" onclick="onCleanupQualityFiltered('selected')">
+                        <i class="fas fa-trash"></i> Delete selected
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
     <script src="{{ url_for('static', filename='js/app.js') }}"></script>
 </body>
 </html>
