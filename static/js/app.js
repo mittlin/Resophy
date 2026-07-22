@@ -9594,6 +9594,7 @@ async function restartDailyArxivFetch() {
     if (!testResult.success) {
         // The test fails and the error message is redisplayed.（With refresh effect）
         const actionButton = `
+            <span class="notification-actions">
             <button class="notification-action-btn" onclick="restartDailyArxivFetch()" style="
                 background: #c62828;
                 color: white;
@@ -9633,6 +9634,7 @@ async function restartDailyArxivFetch() {
             " onmouseover="this.style.background='#0d47a1'" onmouseout="this.style.background='#1565c0'" title="Fetch all categories">
                 <i class="fas fa-sync-alt"></i> Fetch All
             </button>
+            </span>
         `;
         showRoundedNotification('LLM API Call failed, stop Daily arXiv,Check, please LLM API set up.', 'error', true, 'daily-arxiv-api-notification', actionButton);
         return;
@@ -9667,6 +9669,7 @@ async function checkDailyArxivLLMConfig() {
                 if (data.llm_api_failed) {
                     // Display a permanent pop-up window with a restart button
                     const actionButton = `
+                        <span class="notification-actions">
                         <button class="notification-action-btn" onclick="restartDailyArxivFetch()" style="
                             background: #c62828;
                             color: white;
@@ -9706,6 +9709,7 @@ async function checkDailyArxivLLMConfig() {
                         " onmouseover="this.style.background='#0d47a1'" onmouseout="this.style.background='#1565c0'" title="Fetch all categories">
                             <i class="fas fa-sync-alt"></i> Fetch All
                         </button>
+                        </span>
                     `;
                     showRoundedNotification('LLM API Call failed, stop Daily arXiv,Check, please LLM API set up.', 'error', true, 'daily-arxiv-api-notification', actionButton);
                 } else {
@@ -10617,9 +10621,9 @@ function showRoundedNotification(message, type = 'error', persistent = true, not
         }
         // Update action button（If provided）
         if (actionButton) {
-            const existingActionBtn = notification.querySelector('.notification-action-btn');
-            if (existingActionBtn) {
-                existingActionBtn.outerHTML = actionButton;
+            const existingContainer = notification.querySelector('.notification-actions');
+            if (existingContainer) {
+                existingContainer.outerHTML = actionButton;
             } else {
                 // Insert action button before close button
                 const closeBtn = notification.querySelector('button[onclick*="remove"]');
