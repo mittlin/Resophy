@@ -9607,6 +9607,32 @@ async function restartDailyArxivFetch() {
             " onmouseover="this.style.background='#a02020'" onmouseout="this.style.background='#c62828'" title="Retest and start crawling">
                 <i class="fas fa-redo"></i> Restart
             </button>
+            <button class="notification-action-btn" onclick="triggerFetchPapers(false)" style="
+                background: #1565c0;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 4px 12px;
+                font-size: 12px;
+                cursor: pointer;
+                margin-left: 4px;
+                transition: background 0.2s;
+            " onmouseover="this.style.background='#0d47a1'" onmouseout="this.style.background='#1565c0'" title="Fetch current category">
+                <i class="fas fa-sync"></i> Fetch
+            </button>
+            <button class="notification-action-btn" onclick="triggerFetchAllCategories(false)" style="
+                background: #1565c0;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 4px 12px;
+                font-size: 12px;
+                cursor: pointer;
+                margin-left: 4px;
+                transition: background 0.2s;
+            " onmouseover="this.style.background='#0d47a1'" onmouseout="this.style.background='#1565c0'" title="Fetch all categories">
+                <i class="fas fa-sync-alt"></i> Fetch All
+            </button>
         `;
         showRoundedNotification('LLM API Call failed, stop Daily arXiv,Check, please LLM API set up.', 'error', true, 'daily-arxiv-api-notification', actionButton);
         return;
@@ -9653,6 +9679,32 @@ async function checkDailyArxivLLMConfig() {
                             transition: background 0.2s;
                         " onmouseover="this.style.background='#a02020'" onmouseout="this.style.background='#c62828'" title="Retest and start crawling">
                             <i class="fas fa-redo"></i> Restart
+                        </button>
+                        <button class="notification-action-btn" onclick="triggerFetchPapers(false)" style="
+                            background: #1565c0;
+                            color: white;
+                            border: none;
+                            border-radius: 4px;
+                            padding: 4px 12px;
+                            font-size: 12px;
+                            cursor: pointer;
+                            margin-left: 4px;
+                            transition: background 0.2s;
+                        " onmouseover="this.style.background='#0d47a1'" onmouseout="this.style.background='#1565c0'" title="Fetch current category">
+                            <i class="fas fa-sync"></i> Fetch
+                        </button>
+                        <button class="notification-action-btn" onclick="triggerFetchAllCategories(false)" style="
+                            background: #1565c0;
+                            color: white;
+                            border: none;
+                            border-radius: 4px;
+                            padding: 4px 12px;
+                            font-size: 12px;
+                            cursor: pointer;
+                            margin-left: 4px;
+                            transition: background 0.2s;
+                        " onmouseover="this.style.background='#0d47a1'" onmouseout="this.style.background='#1565c0'" title="Fetch all categories">
+                            <i class="fas fa-sync-alt"></i> Fetch All
                         </button>
                     `;
                     showRoundedNotification('LLM API Call failed, stop Daily arXiv,Check, please LLM API set up.', 'error', true, 'daily-arxiv-api-notification', actionButton);
