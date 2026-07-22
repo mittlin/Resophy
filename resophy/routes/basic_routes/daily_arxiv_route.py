@@ -26,6 +26,7 @@ from resophy.tools.basic_tools.daily_arxiv import (
     get_today_arxiv_date,
     is_valid_daily_arxiv_summary,
     normalize_daily_arxiv_settings,
+    should_keep_paper_by_institution_tier,
     validate_arxiv_category_ratios,
 )
 from resophy.tools.basic_tools.upload_paper import fetch_bibtex_from_dblp
@@ -308,27 +309,120 @@ def register_daily_arxiv_routes(
                 )
             papers = manager.get_papers_for_date(date_str, fetch_category)
             generated = 0
-            skipped = 0
-            failed = 0
-            for p in papers:
-                if is_valid_daily_arxiv_summary(p.get("summary")):
-                    skipped += 1
-                    continue
-                result, err = _generate_for(p)
-                if result:
-                    generated += 1
-                else:
-                    failed += 1
-                    print(
-                        f"[DailyArxiv] Batch summary generation failed for "
-                        f"{p.get('arxiv_id')}: {err}"
+            skipped_summary = 0
+            failed_summary = 0
+            affs_extracted = 0
+            affs_skipped = 0
+            affs_failed = 0
+            quality_filtered = 0
+
+            affiliation_prompt = settings.get("affiliationPrompt")
+            quality_config = settings.get("qualityConfig", {})
+
+            def _add_to_quality_filtered(paper_dict, reason, cat, dt):
+                qf_path = os.path.join(temp_papers_dir, "quality_filtered.json")
+                entries = []
+                if os.path.exists(qf_path):
+                    with open(qf_path, "r") as f:
+                        try:
+                            entries = json.load(f)
+                        except json.JSONDecodeError:
+                            entries = []
+                aid = paper_dict.get("arxiv_id", "")
+                if not any(e.get("arxiv_id") == aid for e in entries):
+                    entries.append(
+                        {
+                            "arxiv_id": aid,
+                            "title": paper_dict.get("title", ""),
+                            "affiliations": paper_dict.get("affiliations", []),
+                            "countries": paper_dict.get("countries", []),
+                            "category": cat or paper_dict.get("fetch_category", ""),
+                            "date": dt,
+                            "reason": reason,
+                            "filtered_at": datetime.now().isoformat(),
+                        }
                     )
+                with open(qf_path, "w", encoding="utf-8") as f:
+                    json.dump(entries, f, ensure_ascii=False, indent=2)
+
+            def _extract_affiliations_for(paper_dict, cat):
+                pdf_path = paper_dict.get("local_pdf_path")
+                if not pdf_path or not os.path.exists(pdf_path):
+                    return False
+                try:
+                    first_page_text = extract_pdf_first_page_text(pdf_path)
+                    if not first_page_text:
+                        return False
+                    result = extract_affiliations_with_llm(
+                        first_page_text,
+                        llm_config["llmBaseUrl"],
+                        llm_config["llmApiKey"],
+                        llm_config["llmModel"],
+                        prompt=affiliation_prompt,
+                        settings_file=daily_arxiv_settings_file,
+                    )
+                    if not result:
+                        return False
+                    paper_dict["affiliations"] = result.get("affiliations", [])
+                    paper_dict["countries"] = result.get("countries", [])
+                    paper_dict["homepage"] = result.get("homepage")
+                    paper_dict["github"] = result.get("github")
+                    paper_dict["affiliations_extracted"] = True
+                    cat_dir = manager.get_category_dir(
+                        date_str,
+                        cat or paper_dict.get("fetch_category")
+                        or settings.get("categories", ["cs.CV"])[0],
+                    )
+                    manager._save_paper(paper_dict, cat_dir)
+                    return True
+                except Exception as e:
+                    print(
+                        f"[DailyArxiv] Batch affiliation extraction failed for "
+                        f"{paper_dict.get('arxiv_id')}: {e}"
+                    )
+                    return False
+
+            for p in papers:
+                cat = p.get("fetch_category") or fetch_category or "cs.CV"
+
+                # Step 1: Generate summary if missing
+                if not is_valid_daily_arxiv_summary(p.get("summary")):
+                    result, err = _generate_for(p)
+                    if result:
+                        generated += 1
+                    else:
+                        failed_summary += 1
+                        print(
+                            f"[DailyArxiv] Batch summary generation failed for "
+                            f"{p.get('arxiv_id')}: {err}"
+                        )
+
+                # Step 2: Extract affiliations if missing
+                if not p.get("affiliations_extracted"):
+                    if _extract_affiliations_for(p, cat):
+                        affs_extracted += 1
+                        # Step 3: Quality filter
+                        keep, reason = should_keep_paper_by_institution_tier(
+                            p, quality_config
+                        )
+                        if not keep:
+                            quality_filtered += 1
+                            _add_to_quality_filtered(p, reason, cat, date_str)
+                    else:
+                        affs_failed += 1
+                else:
+                    affs_skipped += 1
+
             return jsonify(
                 {
                     "success": True,
                     "generated": generated,
-                    "skipped": skipped,
-                    "failed": failed,
+                    "skipped": skipped_summary,
+                    "failed": failed_summary,
+                    "affiliations_extracted": affs_extracted,
+                    "affiliations_skipped": affs_skipped,
+                    "affiliations_failed": affs_failed,
+                    "quality_filtered": quality_filtered,
                 }
             )
 
@@ -1035,6 +1129,72 @@ def register_daily_arxiv_routes(
 
             traceback.print_exc()
             return jsonify({"success": False, "error": f"Failed to extract: {str(exc)}"}), 500
+
+    # ========================================
+    # Quality Filtered — View & Cleanup
+    # ========================================
+    @app.route("/api/daily-arxiv/quality-filtered", methods=["GET"])
+    def api_get_quality_filtered():
+        """Return the list of quality-filtered papers"""
+        try:
+            qf_path = os.path.join(temp_papers_dir, "quality_filtered.json")
+            papers = []
+            if os.path.exists(qf_path):
+                with open(qf_path, "r") as f:
+                    try:
+                        papers = json.load(f)
+                    except json.JSONDecodeError:
+                        papers = []
+            return jsonify({"success": True, "papers": papers, "count": len(papers)})
+        except Exception as exc:
+            return jsonify({"success": False, "error": str(exc)}), 500
+
+    @app.route("/api/daily-arxiv/quality-filtered/cleanup", methods=["POST"])
+    def api_cleanup_quality_filtered():
+        """Delete quality-filtered papers (arxiv_ids list or all)"""
+        try:
+            data = request.json or {}
+            arxiv_ids = data.get("arxiv_ids", [])
+            all_flag = data.get("all", False)
+
+            qf_path = os.path.join(temp_papers_dir, "quality_filtered.json")
+            if not os.path.exists(qf_path):
+                return jsonify({"success": True, "removed": 0, "remaining": 0})
+
+            with open(qf_path, "r") as f:
+                try:
+                    papers = json.load(f)
+                except json.JSONDecodeError:
+                    papers = []
+
+            if all_flag:
+                to_remove = list(papers)
+            elif arxiv_ids:
+                id_set = set(arxiv_ids)
+                to_remove = [p for p in papers if p.get("arxiv_id") in id_set]
+            else:
+                return jsonify({"success": False, "error": "Provide arxiv_ids or all:true"}), 400
+
+            for p in to_remove:
+                safe_id = p["arxiv_id"].replace("/", "_").replace(":", "_")
+                cat_dir = os.path.join(temp_papers_dir, p["date"], p["category"])
+                for ext in [".json", ".pdf", "_thumb.jpg"]:
+                    fpath = os.path.join(cat_dir, f"{safe_id}{ext}")
+                    if os.path.exists(fpath):
+                        os.remove(fpath)
+
+            removed_ids = {p["arxiv_id"] for p in to_remove}
+            remaining = [p for p in papers if p["arxiv_id"] not in removed_ids]
+            with open(qf_path, "w", encoding="utf-8") as f:
+                json.dump(remaining, f, ensure_ascii=False, indent=2)
+
+            return jsonify({
+                "success": True,
+                "removed": len(to_remove),
+                "remaining": len(remaining),
+            })
+        except Exception as exc:
+            return jsonify({"success": False, "error": str(exc)}), 500
 
     # ========================================
     # Get Thumbnail
