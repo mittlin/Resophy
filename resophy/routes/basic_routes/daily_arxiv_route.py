@@ -367,17 +367,18 @@ def register_daily_arxiv_routes(
                 if not p.get("affiliations_extracted") or not p.get("affiliations"):
                     if _extract_affiliations_for(p, cat):
                         affs_extracted += 1
-                        # Step 3: Quality filter
-                        keep, reason = should_keep_paper_by_institution_tier(
-                            p, quality_config
-                        )
-                        if not keep:
-                            quality_filtered += 1
-                            _add_to_quality_filtered(p, reason, cat, date_str)
                     else:
                         affs_failed += 1
                 else:
                     affs_skipped += 1
+
+                # Step 3: Quality filter — runs on ALL papers
+                keep, reason = should_keep_paper_by_institution_tier(
+                    p, quality_config
+                )
+                if not keep:
+                    quality_filtered += 1
+                    _add_to_quality_filtered(p, reason, cat, date_str)
 
             return jsonify(
                 {
