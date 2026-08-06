@@ -10098,7 +10098,7 @@ async function navigateDate(direction) {
 }
 
 // Load papers of current date
-async function loadPapersForCurrentDate() {
+async function loadPapersForCurrentDate(forceRefresh = false) {
     if (!dailyArxivCurrentDate) {
         return;
     }
@@ -10121,6 +10121,9 @@ async function loadPapersForCurrentDate() {
     // Check if it needs to be loaded from the server
     for (const cat of categoriesToLoad) {
         const cacheKey = `${dailyArxivCurrentDate}_${cat}`;
+        if (forceRefresh) {
+            delete dailyArxivPapers[cacheKey];
+        }
         if (!dailyArxivPapers[cacheKey]) {
             needsLoading = true;
             break;
@@ -11163,7 +11166,7 @@ async function fetchDailyArxivPapers(forceRefresh = false) {
     }
     
     // Load from server
-    await loadPapersForCurrentDate();
+    await loadPapersForCurrentDate(forceRefresh);
 }
 
 // switch partition
@@ -11845,7 +11848,7 @@ async function onDailyArxivBatchSummary() {
                 showQualityFilteredButton(data.quality_filtered);
                 showMessage(`${data.quality_filtered} papers filtered by quality, click 'Filtered' to review`, 'warning', 8000);
             }
-            await loadPapersForCurrentDate();
+            await loadPapersForCurrentDate(true);
         } else {
             showMessage(data.error || 'Batch summary failed', 'error');
         }
