@@ -947,7 +947,7 @@ class DailyArxivManager:
         # arXiv client
         self.client = arxiv.Client(
             page_size=50,
-            delay_seconds=3.0,
+            delay_seconds=5.0,
             num_retries=3,
         )
 
@@ -1280,6 +1280,37 @@ class DailyArxivManager:
             self.progress[category] = FetchProgress()
         return self.progress[category].to_dict()
 
+    def _iter_arxiv_results_with_backoff(
+        self, search, max_429_retries: int = 3, base_wait: int = 15
+    ):
+        """Yield arxiv results, transparently retrying on HTTP 429 (rate limit).
+
+        arXiv throttles per-IP; arxiv.py retries quickly and then raises
+        arxiv.HTTPError(status=429). We wait out the throttle window and
+        re-iterate, skipping result IDs already yielded so nothing is processed twice.
+        """
+        seen_ids: set = set()
+        for attempt in range(max_429_retries + 1):
+            try:
+                for result in self.client.results(search):
+                    entry_id = getattr(result, "entry_id", None)
+                    if entry_id is None:
+                        entry_id = id(result)
+                    if entry_id in seen_ids:
+                        continue
+                    seen_ids.add(entry_id)
+                    yield result
+                return
+            except arxiv.HTTPError as e:
+                if getattr(e, "status", None) != 429 or attempt >= max_429_retries:
+                    raise
+                wait = base_wait * (attempt + 1)
+                print(
+                    f"[DailyArxiv] arXiv returned HTTP 429 (rate limit), "
+                    f"waiting {wait}s then retrying ({attempt + 1}/{max_429_retries})..."
+                )
+                time.sleep(wait)
+
     def fetch_papers(
         self,
         category: str,
@@ -1372,7 +1403,7 @@ class DailyArxivManager:
             min_check_count = 100  # Minimum number of papers examined
             max_consecutive_older = 20  # Maximum number of older papers found consecutively, stopping if exceeded
 
-            for result in self.client.results(search):
+            for result in self._iter_arxiv_results_with_backoff(search):
                 checked_count += 1
 
                 # Check paper date
@@ -2510,7 +2541,9 @@ Now the input abstract is:
                         print(f"[DailyArxiv] crawl {category} {date_str} fail: {e}")
 
                     # Interval between partitions to prevent requests from being too fast
-                    time.sleep(2)
+                    time.sleep(5)
+                # Interval between dates to stay clear of the arXiv rate limit
+                time.sleep(5)
         else:
             print(
                 f"[DailyArxiv] All required dates are complete, no additions are needed"
@@ -3020,7 +3053,7 @@ class DailyArxivFetcher:
         self.temp_dir = temp_dir
         self.client = arxiv.Client(
             page_size=50,
-            delay_seconds=3.0,
+            delay_seconds=5.0,
             num_retries=3,
         )
 
