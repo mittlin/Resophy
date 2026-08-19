@@ -12573,9 +12573,17 @@ function showDailyArxivDetail(index) {
                         <a href="https://arxiv.org/abs/${paper.arxiv_id}" target="_blank">
                             <i class="fas fa-external-link-alt"></i> arXiv
                         </a>
-                        <a href="${paper.pdf_url}" target="_blank">
-                            <i class="fas fa-file-pdf"></i> PDF
-                        </a>
+                        ${(() => {
+                            const localPdf = paper.local_pdf_path;
+                            const pdfDate = paper.fetch_date || dailyArxivCurrentDate;
+                            const pdfCat = encodeURIComponent(paper.fetch_category || dailyArxivCurrentCategory || '');
+                            const pdfHref = localPdf
+                                ? `/api/daily-arxiv/pdf/${pdfDate}/${pdfCat}/${encodeURIComponent(paper.arxiv_id)}`
+                                : paper.pdf_url;
+                            return `<a href="${pdfHref}" target="_blank">
+                                <i class="fas fa-file-pdf"></i> PDF
+                            </a>`;
+                        })()}
                     </div>
                     <button class="daily-arxiv-add-btn" onclick="onDailyArxivAddToReadingList(${index}, event); closeDailyArxivDetail();">
                         <i class="fas fa-book-open"></i> Add to Readling List

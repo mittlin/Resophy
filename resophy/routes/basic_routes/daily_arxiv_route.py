@@ -1255,6 +1255,41 @@ def register_daily_arxiv_routes(
             traceback.print_exc()
             return jsonify({"success": False, "error": str(exc)}), 500
 
+    @app.route("/api/daily-arxiv/pdf/<date_str>/<category>/<arxiv_id>")
+    def api_get_daily_arxiv_pdf(date_str: str, category: str, arxiv_id: str):
+        """Get the locally downloaded PDF of a daily arXiv paper"""
+        try:
+            from urllib.parse import unquote
+
+            category = unquote(category)
+            arxiv_id = unquote(arxiv_id)
+
+            papers = manager.get_papers_for_date(date_str, category)
+            paper = next(
+                (p for p in papers if p.get("arxiv_id") == arxiv_id), None
+            )
+            if not paper:
+                return jsonify({"success": False, "error": "Paper not found"}), 404
+
+            pdf_path = paper.get("local_pdf_path")
+            if not pdf_path or not os.path.exists(pdf_path):
+                return (
+                    jsonify({"success": False, "error": "PDF file does not exist locally"}),
+                    404,
+                )
+
+            response = send_file(
+                pdf_path, mimetype="application/pdf", as_attachment=False
+            )
+            response.headers["Content-Disposition"] = f'inline; filename="{os.path.basename(pdf_path)}"'
+            return response
+        except Exception as exc:
+            print(f"Failed to get daily arxiv PDF: {exc}")
+            import traceback
+
+            traceback.print_exc()
+            return jsonify({"success": False, "error": str(exc)}), 500
+
     # ========================================
     # Cleanup Old Papers
     # ========================================
