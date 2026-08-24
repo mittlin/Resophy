@@ -24,6 +24,139 @@ class TranslationDependencies:
     save_paper_metadata: Callable[[str, Paper], None]
 
 
+def _write_translation_log(
+    pdf_dir: str, base_name: str, log_lines: List[str]
+) -> str | None:
+    """Persist babeldoc output for both success and failure paths"""
+    log_file = os.path.join(pdf_dir, f"{base_name}.translate.log")
+    try:
+        with open(log_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(log_lines))
+    except Exception as e:  # noqa: BLE001
+        print(f"Failed to save log file: {e}")
+        return None
+    return log_file
+
+
+_FAILURE_PATTERNS = [
+    ("scannedpdferror", "scanned PDF and OCR workaround did not take effect"),
+    ("contains no paragraphs", "no extractable text (scanned PDF without text layer)"),
+    ("total tokens: 0", "LLM service unreachable (0 tokens consumed)"),
+    ("api key", "invalid LLM API key"),
+    ("unauthorized", "LLM service authentication failed"),
+    ("401", "LLM service authentication failed"),
+    ("does not exist", "model name mismatch"),
+    ("404", "model not found"),
+    ("connection error", "cannot connect to LLM service"),
+    ("apiconnectionerror", "cannot connect to LLM service"),
+    ("max retries exceeded", "cannot connect to LLM service"),
+]
+
+
+def _detect_failure_reason(log_lines: List[str]) -> str:
+    text = "\n".join(log_lines).lower()
+    for pattern, reason in _FAILURE_PATTERNS:
+        if pattern in text:
+            return reason
+    return ""
+
+
+def _build_failure_message(message: str, reason: str, log_file: str | None) -> str:
+    parts = [message]
+    if reason:
+        parts.append(reason)
+    if log_file:
+        parts.append(f"see {log_file}")
+    return ": ".join(parts)
+
+
+_OCR_DPI = 200
+_OCR_MIN_SCORE = 0.5
+_SCAN_SAMPLE_LIMIT = 6
+
+
+def _sample_page_indices(page_count: int, limit: int = _SCAN_SAMPLE_LIMIT) -> List[int]:
+    if page_count <= limit:
+        return list(range(page_count))
+    step = page_count / limit
+    return sorted({int(i * step) for i in range(limit)})
+
+
+def _needs_text_layer(pdf_path: str) -> bool:
+    """Detect image-only scanned PDFs by sampling pages for extractable text"""
+    try:
+        import fitz
+
+        doc = fitz.open(pdf_path)
+    except Exception as e:  # noqa: BLE001
+        print(f"Cannot open PDF for scan check: {e}")
+        return False
+    with doc:
+        indices = _sample_page_indices(doc.page_count)
+        if not indices:
+            return False
+        has_image = False
+        for idx in indices:
+            page = doc.load_page(idx)
+            if page.get_text().strip():
+                return False
+            if page.get_images(full=True):
+                has_image = True
+        return has_image
+
+
+def _build_ocr_pdf(pdf_path: str, progress_cb: Callable[[str], None]) -> str:
+    """Run local OCR and write an invisible text layer so babeldoc can translate"""
+    import fitz
+    from rapidocr_onnxruntime import RapidOCR
+
+    ocr = RapidOCR()
+    font = fitz.Font("china-s")
+    scale = 72 / _OCR_DPI
+    out_path = os.path.splitext(pdf_path)[0] + ".ocr.pdf"
+
+    doc = fitz.open(pdf_path)
+    try:
+        total = doc.page_count
+        ocr_char_count = 0
+        for idx in range(total):
+            page = doc.load_page(idx)
+            pix = page.get_pixmap(dpi=_OCR_DPI)
+            result, _ = ocr(pix.tobytes("png"))
+            page_text_count = 0
+            if result:
+                for box, text, score in result:
+                    if score < _OCR_MIN_SCORE or not text.strip():
+                        continue
+                    xs = [point[0] * scale for point in box]
+                    ys = [point[1] * scale for point in box]
+                    rect = fitz.Rect(min(xs), min(ys), max(xs), max(ys))
+                    rect &= page.rect
+                    if rect.is_empty or rect.width < 1 or rect.height < 1:
+                        continue
+                    unit_width = max(font.text_length(text, fontsize=10) / 10, 0.1)
+                    fontsize = min(rect.height * 0.9, rect.width / unit_width)
+                    baseline = fitz.Point(
+                        rect.x0, rect.y1 - rect.height * 0.15
+                    )
+                    page.insert_text(
+                        baseline,
+                        text,
+                        fontname="china-s",
+                        fontsize=fontsize,
+                        render_mode=3,
+                    )
+                    page_text_count += len(text)
+            ocr_char_count += page_text_count
+            if (idx + 1) % 10 == 0 or idx + 1 == total:
+                progress_cb(f"OCR progress: {idx + 1}/{total} pages")
+        progress_cb(f"OCR finished, extracted {ocr_char_count} characters")
+        doc.save(out_path, garbage=3, deflate=True)
+    finally:
+        doc.close()
+    return out_path
+
+
 def translate_paper_task(
     task_id: str,
     paper_id: str,
@@ -61,6 +194,21 @@ def translate_paper_task(
     original_cwd = os.getcwd()
     try:
         os.chdir(pdf_dir)
+
+        target_pdf_filename = pdf_filename
+        ocr_applied = False
+        source_pdf_path = os.path.join(pdf_dir, pdf_filename)
+        if _needs_text_layer(source_pdf_path):
+
+            def _ocr_progress(message: str) -> None:
+                print(message)
+                with log_lock:
+                    log_lines.append(f"[Resophy] {message}")
+
+            ocr_path = _build_ocr_pdf(source_pdf_path, _ocr_progress)
+            target_pdf_filename = os.path.basename(ocr_path)
+            ocr_applied = True
+
         cmd = [
             "babeldoc",
             "--openai",
@@ -70,8 +218,9 @@ def translate_paper_task(
             openai_base_url,
             "--openai-api-key",
             openai_api_key,
+            "--auto-enable-ocr-workaround",
             "--files",
-            pdf_filename,
+            target_pdf_filename,
         ]
 
         print(f"Execute translation command: {' '.join(cmd)}")
@@ -100,7 +249,7 @@ def translate_paper_task(
         stdout_thread.start()
         stderr_thread.start()
 
-        return_code = process.wait(timeout=3600)
+        return_code = process.wait(timeout=7200)
 
         stdout_thread.join(timeout=1)
         stderr_thread.join(timeout=1)
@@ -108,10 +257,31 @@ def translate_paper_task(
         with deps.translation_tasks_lock:
             if return_code == 0:
                 base_name = os.path.splitext(pdf_filename)[0]
+                zero_tokens = any(
+                    "total tokens: 0" in line.lower() for line in log_lines
+                )
+                if ocr_applied and not zero_tokens:
+                    produced_dual = os.path.join(
+                        pdf_dir, f"{base_name}.ocr.zh.dual.pdf"
+                    )
+                    produced_mono = os.path.join(
+                        pdf_dir, f"{base_name}.ocr.zh.mono.pdf"
+                    )
+                    ocr_input_path = os.path.join(pdf_dir, f"{base_name}.ocr.pdf")
+                    if os.path.exists(produced_dual):
+                        os.replace(
+                            produced_dual,
+                            os.path.join(pdf_dir, f"{base_name}.zh.dual.pdf"),
+                        )
+                    if os.path.exists(produced_mono):
+                        os.remove(produced_mono)
+                    if os.path.exists(ocr_input_path):
+                        os.remove(ocr_input_path)
+
                 dual_file = os.path.join(pdf_dir, f"{base_name}.zh.dual.pdf")
                 mono_file = os.path.join(pdf_dir, f"{base_name}.zh.mono.pdf")
 
-                if os.path.exists(dual_file):
+                if os.path.exists(dual_file) and not zero_tokens:
                     if os.path.exists(mono_file):
                         os.remove(mono_file)
 
@@ -150,12 +320,7 @@ def translate_paper_task(
                             if search_and_update_paper(child):
                                 break
 
-                    log_file = os.path.join(pdf_dir, f"{base_name}.translate.log")
-                    try:
-                        with open(log_file, "w", encoding="utf-8") as f:
-                            f.write("\n".join(log_lines))
-                    except Exception as e:  # noqa: BLE001
-                        print(f"Failed to save log file: {e}")
+                    log_file = _write_translation_log(pdf_dir, base_name, log_lines)
 
                     end_time = datetime.now()
                     translation_duration = int((end_time - start_time).total_seconds())
@@ -208,24 +373,39 @@ def translate_paper_task(
                         "log_file": log_file,
                     }
                 else:
+                    base_name = os.path.splitext(pdf_filename)[0]
+                    log_file = _write_translation_log(pdf_dir, base_name, log_lines)
+                    reason = _detect_failure_reason(log_lines)
                     deps.translation_tasks[task_id]["status"] = "failed"
                     deps.translation_tasks[task_id]["result"] = {
                         "success": False,
-                        "error": "Translation file not generated",
+                        "error": _build_failure_message(
+                            "Translation file not generated", reason, log_file
+                        ),
                     }
             else:
+                base_name = os.path.splitext(pdf_filename)[0]
+                log_file = _write_translation_log(pdf_dir, base_name, log_lines)
+                reason = _detect_failure_reason(log_lines)
                 deps.translation_tasks[task_id]["status"] = "failed"
                 deps.translation_tasks[task_id]["result"] = {
                     "success": False,
-                    "error": f"Translation failed (exit code: {return_code})",
+                    "error": _build_failure_message(
+                        f"Translation failed (exit code: {return_code})",
+                        reason,
+                        log_file,
+                    ),
                 }
 
     except subprocess.TimeoutExpired:
+        log_file = _write_translation_log(
+            pdf_dir, os.path.splitext(pdf_filename)[0], log_lines
+        )
         with deps.translation_tasks_lock:
             deps.translation_tasks[task_id]["status"] = "failed"
             deps.translation_tasks[task_id]["result"] = {
                 "success": False,
-                "error": "Translation timeout",
+                "error": _build_failure_message("Translation timeout", "", log_file),
             }
         if process:
             process.kill()
