@@ -4916,6 +4916,7 @@ async function saveAgenticSettings(silent = false) {
     const apiKeyEl = document.getElementById('llm-api-key');
     const mineruEl = document.getElementById('mineru-server-url');
     const mineruApiTokenEl = document.getElementById('mineru-api-token');
+    const ocrServiceEl = document.getElementById('ocr-service-url');
     
     // Check if element exists
     if (!modelEl || !baseUrlEl || !apiKeyEl || !mineruEl) {
@@ -4936,7 +4937,8 @@ async function saveAgenticSettings(silent = false) {
         llmApiKey: apiKeyEl.value.trim(),
         mineruServerUrl: mineruEl.value.trim(),
         mineruUseApi: mineruUseApi,
-        mineruApiToken: mineruApiTokenEl ? mineruApiTokenEl.value.trim() : ''
+        mineruApiToken: mineruApiTokenEl ? mineruApiTokenEl.value.trim() : '',
+        ocrServiceUrl: ocrServiceEl ? ocrServiceEl.value.trim() : ''
     };
     
     console.log('[Save settings] ready to save:', {
@@ -5015,6 +5017,7 @@ async function loadAgenticSettings() {
             const apiKeyEl = document.getElementById('llm-api-key');
             const mineruEl = document.getElementById('mineru-server-url');
             const mineruApiTokenEl = document.getElementById('mineru-api-token');
+            const ocrServiceEl = document.getElementById('ocr-service-url');
             const promptEl = document.getElementById('analysis-system-prompt');
             
             if (modelEl) {
@@ -5036,6 +5039,10 @@ async function loadAgenticSettings() {
             if (mineruApiTokenEl) {
                 mineruApiTokenEl.value = settings.mineruApiToken || '';
                 mineruApiTokenEl.addEventListener('input', autoSaveAgenticSettings);
+            }
+            if (ocrServiceEl) {
+                ocrServiceEl.value = settings.ocrServiceUrl || '';
+                ocrServiceEl.addEventListener('input', autoSaveAgenticSettings);
             }
             
             // Set MinerU mode radio buttons

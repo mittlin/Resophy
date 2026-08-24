@@ -3,9 +3,14 @@ from __future__ import annotations
 import os
 import subprocess
 import threading
+import time
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Dict, List
+
+import requests
 
 from resophy.core.base_paper import Paper
 from resophy.core.paper_store import paper_store
@@ -72,7 +77,28 @@ def _build_failure_message(message: str, reason: str, log_file: str | None) -> s
 
 _OCR_DPI = 200
 _OCR_MIN_SCORE = 0.5
+_OCR_SERVICE_TIMEOUT = 120
+_OCR_SERVICE_WORKERS = 6
+_OCR_SERVICE_ATTEMPTS = 3
+_OCR_SERVICE_RETRY_DELAY = 1.0
+_OCR_SERVICE_HEALTH_TIMEOUT = 5
 _SCAN_SAMPLE_LIMIT = 6
+
+
+class OcrServiceError(RuntimeError):
+    """Raised when the remote OCR service fails after retries"""
+
+
+def _service_healthy(service_url: str) -> bool:
+    """Probe the OCR microservice health endpoint"""
+    try:
+        response = requests.get(
+            f"{service_url.rstrip('/')}/health",
+            timeout=_OCR_SERVICE_HEALTH_TIMEOUT,
+        )
+        return response.ok
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _sample_page_indices(page_count: int, limit: int = _SCAN_SAMPLE_LIMIT) -> List[int]:
@@ -105,8 +131,78 @@ def _needs_text_layer(pdf_path: str) -> bool:
         return has_image
 
 
-def _build_ocr_pdf(pdf_path: str, progress_cb: Callable[[str], None]) -> str:
-    """Run local OCR and write an invisible text layer so babeldoc can translate"""
+def _write_text_boxes(page, boxes, font, scale) -> int:
+    """Write OCR boxes as an invisible text layer, return characters written"""
+    import fitz
+
+    written = 0
+    for box, text, score in boxes:
+        if score < _OCR_MIN_SCORE or not text.strip():
+            continue
+        xs = [point[0] * scale for point in box]
+        ys = [point[1] * scale for point in box]
+        rect = fitz.Rect(min(xs), min(ys), max(xs), max(ys))
+        rect &= page.rect
+        if rect.is_empty or rect.width < 1 or rect.height < 1:
+            continue
+        unit_width = max(font.text_length(text, fontsize=10) / 10, 0.1)
+        fontsize = min(rect.height * 0.9, rect.width / unit_width)
+        baseline = fitz.Point(rect.x0, rect.y1 - rect.height * 0.15)
+        page.insert_text(
+            baseline,
+            text,
+            fontname="china-s",
+            fontsize=fontsize,
+            render_mode=3,
+        )
+        written += len(text)
+    return written
+
+
+def _ocr_page_via_service(png_bytes: bytes, service_url: str) -> list:
+    """Send one rendered page to the OCR microservice and return its boxes"""
+    response = requests.post(
+        f"{service_url.rstrip('/')}/ocr",
+        files={"file": ("page.png", png_bytes, "image/png")},
+        timeout=_OCR_SERVICE_TIMEOUT,
+    )
+    response.raise_for_status()
+    payload = response.json().get("results", [])
+    return [(item["box"], item["text"], float(item["score"])) for item in payload]
+
+
+def _ocr_page_with_retry(png_bytes: bytes, service_url: str, page_no: int) -> list:
+    """OCR one page through the service, retrying transient failures"""
+    last_exc: Exception | None = None
+    for attempt in range(1, _OCR_SERVICE_ATTEMPTS + 1):
+        try:
+            return _ocr_page_via_service(png_bytes, service_url)
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if attempt < _OCR_SERVICE_ATTEMPTS:
+                time.sleep(_OCR_SERVICE_RETRY_DELAY)
+    raise OcrServiceError(
+        f"page {page_no}: {type(last_exc).__name__}: {last_exc}"
+    ) from last_exc
+
+
+def _build_ocr_pdf(
+    pdf_path: str,
+    progress_cb: Callable[[str], None],
+    service_url: str = "",
+) -> str:
+    """Build an invisible OCR text layer via remote service; fall back to local
+    CPU OCR only when the service is unreachable at start"""
+    url = service_url.strip()
+    if url:
+        if _service_healthy(url):
+            return _build_ocr_pdf_service(pdf_path, progress_cb, url)
+        progress_cb(f"OCR service {url} unreachable, using local CPU OCR")
+    return _build_ocr_pdf_local(pdf_path, progress_cb)
+
+
+def _build_ocr_pdf_local(pdf_path: str, progress_cb: Callable[[str], None]) -> str:
+    """Run local CPU OCR and write an invisible text layer so babeldoc can translate"""
     import fitz
     from rapidocr_onnxruntime import RapidOCR
 
@@ -123,35 +219,68 @@ def _build_ocr_pdf(pdf_path: str, progress_cb: Callable[[str], None]) -> str:
             page = doc.load_page(idx)
             pix = page.get_pixmap(dpi=_OCR_DPI)
             result, _ = ocr(pix.tobytes("png"))
-            page_text_count = 0
+            boxes = []
             if result:
-                for box, text, score in result:
-                    if score < _OCR_MIN_SCORE or not text.strip():
-                        continue
-                    xs = [point[0] * scale for point in box]
-                    ys = [point[1] * scale for point in box]
-                    rect = fitz.Rect(min(xs), min(ys), max(xs), max(ys))
-                    rect &= page.rect
-                    if rect.is_empty or rect.width < 1 or rect.height < 1:
-                        continue
-                    unit_width = max(font.text_length(text, fontsize=10) / 10, 0.1)
-                    fontsize = min(rect.height * 0.9, rect.width / unit_width)
-                    baseline = fitz.Point(
-                        rect.x0, rect.y1 - rect.height * 0.15
-                    )
-                    page.insert_text(
-                        baseline,
-                        text,
-                        fontname="china-s",
-                        fontsize=fontsize,
-                        render_mode=3,
-                    )
-                    page_text_count += len(text)
-            ocr_char_count += page_text_count
+                boxes = [(box, text, float(score)) for box, text, score in result]
+            ocr_char_count += _write_text_boxes(page, boxes, font, scale)
             if (idx + 1) % 10 == 0 or idx + 1 == total:
                 progress_cb(f"OCR progress: {idx + 1}/{total} pages")
         progress_cb(f"OCR finished, extracted {ocr_char_count} characters")
         doc.save(out_path, garbage=3, deflate=True)
+    finally:
+        doc.close()
+    return out_path
+
+
+def _build_ocr_pdf_service(
+    pdf_path: str,
+    progress_cb: Callable[[str], None],
+    service_url: str,
+) -> str:
+    """OCR pages through the HTTP microservice; abort on unrecoverable failures"""
+    import fitz
+
+    font = fitz.Font("china-s")
+    scale = 72 / _OCR_DPI
+    out_path = os.path.splitext(pdf_path)[0] + ".ocr.pdf"
+
+    doc = fitz.open(pdf_path)
+    executor = ThreadPoolExecutor(max_workers=_OCR_SERVICE_WORKERS)
+    try:
+        total = doc.page_count
+        ocr_char_count = 0
+        inflight: deque = deque()
+        next_idx = 0
+
+        def submit(idx):
+            pix = doc.load_page(idx).get_pixmap(dpi=_OCR_DPI)
+            future = executor.submit(
+                _ocr_page_with_retry, pix.tobytes("png"), service_url, idx + 1
+            )
+            inflight.append((future, idx))
+
+        prefetch = min(_OCR_SERVICE_WORKERS * 2, total)
+        while next_idx < prefetch:
+            submit(next_idx)
+            next_idx += 1
+        while inflight:
+            future, idx = inflight.popleft()
+            boxes = future.result()
+            ocr_char_count += _write_text_boxes(
+                doc.load_page(idx), boxes, font, scale
+            )
+            if (idx + 1) % 10 == 0 or idx + 1 == total:
+                progress_cb(f"OCR progress: {idx + 1}/{total} pages")
+            if next_idx < total:
+                submit(next_idx)
+                next_idx += 1
+        progress_cb(f"OCR finished, extracted {ocr_char_count} characters")
+        doc.save(out_path, garbage=3, deflate=True)
+    except OcrServiceError:
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise
+    else:
+        executor.shutdown(wait=True)
     finally:
         doc.close()
     return out_path
@@ -167,6 +296,7 @@ def translate_paper_task(
     openai_base_url: str,
     openai_api_key: str,
     deps: TranslationDependencies,
+    ocr_service_url: str = "",
 ) -> None:
     """Background translation tasks"""
     start_time = datetime.now()  # Recording start time
@@ -205,7 +335,7 @@ def translate_paper_task(
                 with log_lock:
                     log_lines.append(f"[Resophy] {message}")
 
-            ocr_path = _build_ocr_pdf(source_pdf_path, _ocr_progress)
+            ocr_path = _build_ocr_pdf(source_pdf_path, _ocr_progress, ocr_service_url)
             target_pdf_filename = os.path.basename(ocr_path)
             ocr_applied = True
 
@@ -397,6 +527,21 @@ def translate_paper_task(
                     ),
                 }
 
+    except OcrServiceError as e:
+        print(f"OCR service error: {e}")
+        with log_lock:
+            log_lines.append(f"[Resophy] OCR service error: {e}")
+        base_name = os.path.splitext(pdf_filename)[0]
+        log_file = _write_translation_log(pdf_dir, base_name, log_lines)
+        with deps.translation_tasks_lock:
+            deps.translation_tasks[task_id]["status"] = "failed"
+            deps.translation_tasks[task_id]["result"] = {
+                "success": False,
+                "error": (
+                    f"OCR服务异常（{e}），本次未回落本地；"
+                    f"请检查OCR服务器 {ocr_service_url} 后重新发起翻译"
+                ),
+            }
     except subprocess.TimeoutExpired:
         log_file = _write_translation_log(
             pdf_dir, os.path.splitext(pdf_filename)[0], log_lines

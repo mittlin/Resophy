@@ -2,9 +2,7 @@ import argparse
 import json
 import os
 import threading
-from datetime import datetime
 from functools import partial
-from typing import Optional
 
 from flask import Flask, jsonify, render_template, request
 
@@ -90,12 +88,13 @@ DEFAULT_AGENTIC_SETTINGS = {
     "mineruServerUrl": "",  # PDF parsing service address (for local mode)
     "mineruUseApi": False,  # Toggle between local CLI mode and cloud API mode
     "mineruApiToken": "",  # MinerU cloud API token (for API mode)
+    "ocrServiceUrl": "",  # OCR microservice for scanned PDFs in translation (empty = local CPU OCR)
     # Note: System prompts are now built-in and selected based on user's aiLanguage setting
     # Custom prompts are no longer supported
 }
 
 # Default Daily arXiv settings
-from resophy.tools.basic_tools.daily_arxiv_quality import get_default_quality_config
+from resophy.tools.basic_tools.daily_arxiv_quality import get_default_quality_config  # noqa: E402
 
 DEFAULT_DAILY_ARXIV_SETTINGS = {
     "categories": ["cs.CV"],  # arXiv category list
@@ -394,7 +393,7 @@ def register_routes():
         try:
             with open(AGENTIC_SETTINGS_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except:
+        except Exception:
             return {}
 
     daily_arxiv_manager.set_llm_config_callback(get_llm_config)
@@ -404,7 +403,7 @@ def register_routes():
         try:
             with open(USER_SETTINGS_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except:
+        except Exception:
             return {}
 
     daily_arxiv_manager.set_user_settings_callback(get_user_settings)

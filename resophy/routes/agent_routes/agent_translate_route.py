@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import threading
@@ -124,6 +125,15 @@ def register_agent_translate_routes(
             pdf_dir = os.path.dirname(pdf_path)
             pdf_filename = os.path.basename(pdf_path)
 
+            ocr_service_url = ""
+            try:
+                with open(agentic_settings_file, "r", encoding="utf-8") as fp:
+                    ocr_service_url = str(
+                        json.load(fp).get("ocrServiceUrl") or ""
+                    ).strip()
+            except Exception:  # noqa: BLE001
+                pass
+
             task_id = str(uuid.uuid4())
 
             with translation_tasks_lock:
@@ -158,6 +168,7 @@ def register_agent_translate_routes(
                     openai_base_url,
                     openai_api_key,
                     deps,
+                    ocr_service_url,
                 ),
             )
             thread.daemon = True

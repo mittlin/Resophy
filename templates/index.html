@@ -576,6 +576,27 @@
             </div>
 
 
+                <!-- Scanned PDF OCR service configuration -->
+                <div class="setting-card">
+                    <div class="setting-card-header">
+                        <i class="fas fa-font"></i>
+                        <span>Scanned PDF OCR Service</span>
+                    </div>
+                    <div class="setting-card-body">
+                        <p style="color: #666; margin-bottom: 20px; font-size: 14px;">
+                            <i class="fas fa-info-circle"></i> 
+                            Optional OCR microservice used by AI translation for scanned PDFs. Leave empty to use local CPU OCR.
+                        </p>
+                        <div class="setting-row">
+                            <div class="setting-info">
+                                <label for="ocr-service-url">OCR Service URL</label>
+                                <small>RapidOCR HTTP service base URL</small>
+                            </div>
+                            <input type="text" id="ocr-service-url" placeholder="http://10.2.2.84:6003" class="setting-input" style="width: 300px; max-width: 300px;" />
+                        </div>
+                    </div>
+                </div>
+
             <!-- Daily arXiv Panel -->
             <div class="setting-panel" id="setting-panel-daily-arxiv" style="display:none;">
                 <div class="panel-header">
