@@ -19,24 +19,22 @@ is_healthy() {
 }
 
 find_python_bin() {
-    if [ -n "${PYTHON_BIN:-}" ]; then
-        echo "${PYTHON_BIN}"
-        return
-    fi
-    if command -v python3 >/dev/null 2>&1; then
-        command -v python3
-        return
-    fi
-    if command -v python >/dev/null 2>&1; then
-        command -v python
-        return
-    fi
+    # Pick the first python that can actually run uvicorn (the service needs
+    # fastapi+uvicorn; a bare interpreter without them is useless here).
+    py_has_uvicorn() {
+        "$1" -c "import uvicorn" >/dev/null 2>&1
+    }
     local candidate
     for candidate in \
+        "${PYTHON_BIN:-}" \
         "${SCRIPT_DIR}/../.venv/bin/python" \
         "${HOME}/miniconda3/envs/Resophy/bin/python" \
-        "${HOME}/anaconda3/envs/Resophy/bin/python"; do
-        if [ -x "${candidate}" ]; then
+        "${HOME}/anaconda3/envs/Resophy/bin/python" \
+        "$(command -v python3 2>/dev/null || true)" \
+        "$(command -v python 2>/dev/null || true)"; do
+        [ -n "${candidate}" ] || continue
+        [ -x "${candidate}" ] || continue
+        if py_has_uvicorn "${candidate}"; then
             echo "${candidate}"
             return
         fi
@@ -57,15 +55,20 @@ do_start() {
     fi
     nohup "${py}" -m uvicorn ocr_server:app --host "${HOST}" --port "${PORT}" --app-dir "${SCRIPT_DIR}" >>"${LOG}" 2>&1 &
     echo $! >"${PID_FILE}"
+    # Cold start loads RapidOCR plus a 72MB layout ONNX model; allow up to 60s
     local i
-    for i in $(seq 1 20); do
+    for i in $(seq 1 60); do
         sleep 1
         if is_healthy; then
             echo "OCR service started: http://${HOST}:${PORT} (pid $(cat "${PID_FILE}"), log ${LOG})"
             exit 0
         fi
+        if [ $((i % 10)) -eq 0 ]; then
+            echo "waiting for startup... (${i}s)"
+        fi
     done
-    echo "ERROR: service did not become healthy within 20s, check ${LOG}" >&2
+    echo "ERROR: service did not become healthy within 60s, last log lines:" >&2
+    tail -n 15 "${LOG}" >&2 || true
     exit 1
 }
 
@@ -87,7 +90,7 @@ do_stop() {
             fi
             rm -f "${PID_FILE}"
             echo "OCR service stopped (pid ${pid})"
-            exit 0
+            return 0
         fi
         rm -f "${PID_FILE}"
     fi

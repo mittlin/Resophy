@@ -55,6 +55,8 @@ _FAILURE_PATTERNS = [
     ("connection error", "cannot connect to LLM service"),
     ("apiconnectionerror", "cannot connect to LLM service"),
     ("max retries exceeded", "cannot connect to LLM service"),
+    ("request failed with status", "document-layout service request failed"),
+    ("layout analysis failed", "document-layout service inference error"),
 ]
 
 
@@ -101,6 +103,19 @@ def _service_healthy(service_url: str) -> bool:
         return False
 
 
+def _service_supports_layout(service_url: str) -> bool:
+    """Check whether the OCR microservice also exposes document-layout analysis"""
+    try:
+        response = requests.get(
+            f"{service_url.rstrip('/')}/health",
+            timeout=_OCR_SERVICE_HEALTH_TIMEOUT,
+        )
+        payload = response.json()
+        return bool(payload.get("layout"))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _sample_page_indices(page_count: int, limit: int = _SCAN_SAMPLE_LIMIT) -> List[int]:
     if page_count <= limit:
         return list(range(page_count))
@@ -132,9 +147,22 @@ def _needs_text_layer(pdf_path: str) -> bool:
 
 
 def _write_text_boxes(page, boxes, font, scale) -> int:
-    """Write OCR boxes as an invisible text layer, return characters written"""
+    """Write OCR boxes as an invisible text layer, return characters written
+
+    The layer embeds `font` itself via page.insert_font(fontbuffer=...) so the
+    rendered advances equal font.text_length() exactly; sizing uses that same
+    Font object, keeping the invisible text inside its OCR box for any script.
+
+    History: insert_text(fontname="china-s") renders with built-in Heiti,
+    which advances every glyph a full em, while font.text_length() measures
+    proportional Droid-Sans-Fallback metrics (~0.43em per Latin char). The
+    mismatch made the invisible layer overflow ~2.3x, babeldoc parsed phantom
+    chars beyond each box and produced chained off-page fragments whose
+    translations appeared as tails clipped at the right page edge.
+    """
     import fitz
 
+    page.insert_font(fontname="RSF", fontbuffer=font.buffer)
     written = 0
     for box, text, score in boxes:
         if score < _OCR_MIN_SCORE or not text.strip():
@@ -145,13 +173,17 @@ def _write_text_boxes(page, boxes, font, scale) -> int:
         rect &= page.rect
         if rect.is_empty or rect.width < 1 or rect.height < 1:
             continue
-        unit_width = max(font.text_length(text, fontsize=10) / 10, 0.1)
-        fontsize = min(rect.height * 0.9, rect.width / unit_width)
+        # Erase the printed source text so translations never overlap residue
+        # (babeldoc only masks paragraphs it decides to translate).
+        fill_rect = (rect + (-1.0, -1.0, 1.0, 1.0)) & page.rect
+        page.draw_rect(fill_rect, color=None, fill=(1, 1, 1))
+        unit_width = font.text_length(text, fontsize=1)
+        fontsize = min(rect.height * 0.9, rect.width / max(unit_width, 1e-6))
         baseline = fitz.Point(rect.x0, rect.y1 - rect.height * 0.15)
         page.insert_text(
             baseline,
             text,
-            fontname="china-s",
+            fontname="RSF",
             fontsize=fontsize,
             render_mode=3,
         )
@@ -206,7 +238,8 @@ def _build_ocr_pdf_local(pdf_path: str, progress_cb: Callable[[str], None]) -> s
     import fitz
     from rapidocr_onnxruntime import RapidOCR
 
-    ocr = RapidOCR()
+    # Match the OCR service tuning (faint-line recall, see deploy/ocr_server.py)
+    ocr = RapidOCR(det_box_thresh=0.3, det_unclip_ratio=2.5)
     font = fitz.Font("china-s")
     scale = 72 / _OCR_DPI
     out_path = os.path.splitext(pdf_path)[0] + ".ocr.pdf"
@@ -226,6 +259,10 @@ def _build_ocr_pdf_local(pdf_path: str, progress_cb: Callable[[str], None]) -> s
             if (idx + 1) % 10 == 0 or idx + 1 == total:
                 progress_cb(f"OCR progress: {idx + 1}/{total} pages")
         progress_cb(f"OCR finished, extracted {ocr_char_count} characters")
+        try:
+            doc.subset_fonts()
+        except Exception:
+            progress_cb("fontTools unavailable, skipped font subsetting")
         doc.save(out_path, garbage=3, deflate=True)
     finally:
         doc.close()
@@ -275,6 +312,10 @@ def _build_ocr_pdf_service(
                 submit(next_idx)
                 next_idx += 1
         progress_cb(f"OCR finished, extracted {ocr_char_count} characters")
+        try:
+            doc.subset_fonts()
+        except Exception:
+            progress_cb("fontTools unavailable, skipped font subsetting")
         doc.save(out_path, garbage=3, deflate=True)
     except OcrServiceError:
         executor.shutdown(wait=False, cancel_futures=True)
@@ -284,6 +325,44 @@ def _build_ocr_pdf_service(
     finally:
         doc.close()
     return out_path
+
+
+def _restore_dual_original(
+    dual_path: str, source_pdf_path: str, progress_cb=None
+) -> None:
+    """Stamp pristine original pages onto the left half of the dual PDF.
+
+    The invisible-text-layer builder whitens OCR box regions on the source
+    pages (to remove print-through under the translation). babeldoc's dual
+    output inherits that whitening on the original (left) half, erasing the
+    source text there. Re-draw the untouched original page over the left
+    half to restore it; the translated right half is left untouched.
+    """
+    import fitz
+
+    try:
+        with fitz.open(dual_path) as dual, fitz.open(source_pdf_path) as src:
+            if dual.page_count != src.page_count:
+                if progress_cb:
+                    progress_cb(
+                        "Dual/source page count mismatch "
+                        f"({dual.page_count} vs {src.page_count}), "
+                        "skip original restore"
+                    )
+                return
+            for page in dual:
+                width, height = page.rect.width, page.rect.height
+                page.show_pdf_page(
+                    fitz.Rect(0, 0, width / 2, height), src, page.number
+                )
+            tmp_path = dual_path + ".restore.tmp"
+            dual.save(tmp_path, garbage=4, deflate=True)
+        os.replace(tmp_path, dual_path)
+        if progress_cb:
+            progress_cb("Restored original pages on dual left half")
+    except Exception as e:  # noqa: BLE001
+        if progress_cb:
+            progress_cb(f"Original restore skipped: {type(e).__name__}: {e}")
 
 
 def translate_paper_task(
@@ -335,8 +414,17 @@ def translate_paper_task(
                 with log_lock:
                     log_lines.append(f"[Resophy] {message}")
 
-            ocr_path = _build_ocr_pdf(source_pdf_path, _ocr_progress, ocr_service_url)
-            target_pdf_filename = os.path.basename(ocr_path)
+            cached_ocr_path = os.path.splitext(source_pdf_path)[0] + ".ocr.pdf"
+            if os.path.exists(cached_ocr_path) and os.path.getmtime(
+                cached_ocr_path
+            ) >= os.path.getmtime(source_pdf_path):
+                message = f"Reusing cached OCR layer: {os.path.basename(cached_ocr_path)}"
+                print(message)
+                with log_lock:
+                    log_lines.append(f"[Resophy] {message}")
+            else:
+                _build_ocr_pdf(source_pdf_path, _ocr_progress, ocr_service_url)
+            target_pdf_filename = os.path.basename(cached_ocr_path)
             ocr_applied = True
 
         cmd = [
@@ -349,9 +437,15 @@ def translate_paper_task(
             "--openai-api-key",
             openai_api_key,
             "--auto-enable-ocr-workaround",
-            "--files",
-            target_pdf_filename,
         ]
+        layout_url = ocr_service_url.strip()
+        if layout_url and _service_supports_layout(layout_url):
+            cmd.extend(["--rpc-doclayout3", layout_url.rstrip("/")])
+            message = f"Using remote document-layout service: {layout_url}"
+            print(message)
+            with log_lock:
+                log_lines.append(f"[Resophy] {message}")
+        cmd.extend(["--files", target_pdf_filename])
 
         print(f"Execute translation command: {' '.join(cmd)}")
         print(f"working directory: {pdf_dir}")
@@ -407,6 +501,17 @@ def translate_paper_task(
                         os.remove(produced_mono)
                     if os.path.exists(ocr_input_path):
                         os.remove(ocr_input_path)
+
+                    def _restore_log(message: str) -> None:
+                        print(f"[Resophy] {message}")
+                        with log_lock:
+                            log_lines.append(f"[Resophy] {message}")
+
+                    final_dual = os.path.join(pdf_dir, f"{base_name}.zh.dual.pdf")
+                    if os.path.exists(final_dual):
+                        _restore_dual_original(
+                            final_dual, source_pdf_path, _restore_log
+                        )
 
                 dual_file = os.path.join(pdf_dir, f"{base_name}.zh.dual.pdf")
                 mono_file = os.path.join(pdf_dir, f"{base_name}.zh.mono.pdf")

@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import sys
 import threading
 from functools import partial
 
@@ -566,6 +567,12 @@ def analysis_viewer(paper_id):
 
 
 if __name__ == "__main__":
+    # Line-buffer stdout so redirected output (run.sh &> log.local) is visible in real time
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:  # noqa: BLE001
+        pass
+
     # Parse command line arguments
     args = parser.parse_args()
 
